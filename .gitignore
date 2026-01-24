@@ -33,3 +33,5 @@ node_modules/
 __pycache__/
 *.pyc
 .venv/
+test_captures/*.wav
+test_captures/*.pcm
