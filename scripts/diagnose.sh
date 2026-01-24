@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# Voxbridge Diagnostic Script
+# Bandophone Diagnostic Script
 # Run this while a call is active to discover audio routing
 #
 
 set -e
 
 echo "═══════════════════════════════════════════════════════"
-echo "  Voxbridge Audio Diagnostics"
+echo "  Bandophone Audio Diagnostics"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 
@@ -31,7 +31,7 @@ echo ""
 # Check root
 echo "🔐 Checking root access..."
 if ! adb shell "su -c 'id'" 2>/dev/null | grep -q "uid=0"; then
-    echo "❌ Root access not available. Voxbridge requires a rooted device."
+    echo "❌ Root access not available. Bandophone requires a rooted device."
     exit 1
 fi
 echo "✅ Root access confirmed"

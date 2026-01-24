@@ -1,8 +1,8 @@
-# Voxbridge
+# Bandophone 🦝📞
 
 **Route Android phone call audio to AI in real-time.**
 
-Voxbridge captures cellular call audio from a rooted Android device and streams it bidirectionally to an AI backend (OpenAI Realtime, etc.), enabling AI-powered phone conversations over real phone numbers.
+Bandophone captures cellular call audio from a rooted Android device and streams it bidirectionally to an AI backend (OpenAI Realtime, etc.), enabling AI-powered phone conversations over real phone numbers.
 
 > ⚠️ **Early Development** — This project is exploring uncharted territory. Contributions and findings welcome.
 
@@ -13,13 +13,13 @@ Existing AI voice solutions require:
 - Porting your phone number
 - Dedicated hardware
 
-Voxbridge takes a different approach: use the phone you already have. Your AI assistant makes and receives calls using your actual cellular connection.
+Bandophone takes a different approach: use the phone you already have. Your AI assistant makes and receives calls using your actual cellular connection.
 
 ## How It Works
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Cellular  │────▶│  Voxbridge  │────▶│  AI Backend │
+│   Cellular  │────▶│  Bandophone  │────▶│  AI Backend │
 │    Call     │◀────│   (Phone)   │◀────│  (OpenAI)   │
 └─────────────┘     └─────────────┘     └─────────────┘
                            │
