@@ -1,19 +1,21 @@
 # Bandophone 🦝📞
 
-**Route Android phone call audio to AI in real-time.**
+**Give your AI assistant a real phone.**
 
-Bandophone captures cellular call audio from a rooted Android device and streams it bidirectionally to an AI backend (OpenAI Realtime, etc.), enabling AI-powered phone conversations over real phone numbers.
+Got a spare rootable Android and a spare phone line? Bandophone lets your AI assistant make and receive actual phone calls — dial real numbers, talk to real people, handle real conversations.
+
+No SIP infrastructure. No number porting. No dedicated hardware. Just a phone that your AI can use like a person would.
 
 > ⚠️ **Early Development** — This project is exploring uncharted territory. Contributions and findings welcome.
 
-## Why?
+## The Vision
 
-Existing AI voice solutions require:
-- SIP/VoIP infrastructure
-- Porting your phone number
-- Dedicated hardware
+Your AI assistant shouldn't be trapped in a chat window. It should be able to:
+- 📞 **Call businesses** — Schedule appointments, check hours, make reservations
+- 📲 **Receive calls** — Answer your phone when you're busy, take messages
+- 🗣️ **Have real conversations** — Using OpenAI Realtime or similar voice AI APIs
 
-Bandophone takes a different approach: use the phone you already have. Your AI assistant makes and receives calls using your actual cellular connection.
+All over the regular phone network, with a real phone number that anyone can call.
 
 ## How It Works
 
@@ -130,7 +132,13 @@ MIT
 ## Acknowledgments
 
 - Built for the [Clawdbot](https://github.com/clawdbot/clawdbot) community
+- Designed to integrate with [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)
 - Inspired by the dream of AI assistants that can actually call people
+
+## See Also
+
+- [Clawdbot](https://github.com/clawdbot/clawdbot) — The AI assistant framework this was built for
+- [Clawdbot Android Node](https://github.com/clawdbot/clawdbot-android) — Companion app (Bandophone may integrate here later)
 
 ---
 
