@@ -8,6 +8,8 @@ No SIP infrastructure. No number porting. No dedicated hardware. Just a phone th
 
 > ⚠️ **Early Development** — This project is exploring uncharted territory. Contributions and findings welcome.
 
+> 🛠️ **Built by a UX designer and an AI** — This is a best-effort project by [Noah](https://github.com/noahribaudo) (UX designer, not a systems programmer) and [Bando](https://github.com/clawdbot/clawdbot) (an AI assistant). We're learning as we go. **Do not assume this is secure.** Don't use it for anything sensitive. We're sharing it because the concept is cool and maybe real developers can help make it better.
+
 ## The Vision
 
 Your AI assistant shouldn't be trapped in a chat window. It should be able to:
