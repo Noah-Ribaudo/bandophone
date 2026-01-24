@@ -1,0 +1,35 @@
+# Build outputs
+*.o
+*.so
+*.a
+
+# Audio test files
+*.raw
+*.pcm
+*.wav
+
+# Diagnostic outputs
+mixer_full.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Android build
+android/app/build/
+android/.gradle/
+*.apk
+*.aab
+
+# Node (if we use it)
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
