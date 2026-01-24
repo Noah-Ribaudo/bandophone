@@ -66,7 +66,7 @@ Bandophone takes a different approach: use the phone you already have. Your AI a
 ## Architecture
 
 ```
-voxbridge/
+bandophone/
 ├── docs/
 │   ├── AUDIO_ROUTING.md      # Device-specific audio findings
 │   ├── MIXER_CONTROLS.md     # ALSA mixer documentation
@@ -87,8 +87,8 @@ voxbridge/
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/voxbridge.git
-cd voxbridge
+git clone https://github.com/yourusername/bandophone.git
+cd bandophone
 
 # Run diagnostics on your connected Android device
 ./scripts/diagnose.sh
