@@ -494,8 +494,10 @@ class PhoneCapture:
         self.is_running = True
         
         log.info("Waiting for active call...")
+        # Pre-configure mixer for faster startup
+        self.setup_capture()
         while self.is_running and not self.check_call_active():
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)  # Fast polling - 100ms
         
         if not self.is_running:
             return
