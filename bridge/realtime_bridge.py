@@ -298,6 +298,21 @@ class RealtimeBridge:
             "audio": audio_b64
         }))
     
+    async def commit_audio(self):
+        """Commit the audio buffer to trigger response generation."""
+        if not self.is_connected:
+            return
+        
+        log.debug("Committing audio buffer")
+        await self.ws.send(json.dumps({
+            "type": "input_audio_buffer.commit"
+        }))
+        
+        # Also create a response
+        await self.ws.send(json.dumps({
+            "type": "response.create"
+        }))
+    
     async def handle_responses(self):
         """Handle responses from OpenAI Realtime."""
         try:
@@ -316,6 +331,9 @@ class RealtimeBridge:
     
     async def _process_event(self, event_type: str, data: dict):
         """Process events from Realtime API."""
+        
+        if self.config.verbose:
+            log.debug(f"Event: {event_type}")
         
         if event_type == "session.created":
             log.debug("Session created")
@@ -511,6 +529,55 @@ class PhoneCapture:
             self.process = None
 
 
+class FileCapture:
+    """Capture from a pre-recorded audio file for testing."""
+    
+    def __init__(self, filepath: str, config: BandophoneConfig):
+        self.filepath = filepath
+        self.config = config
+        self.is_running = False
+    
+    async def capture_loop(self, bridge: RealtimeBridge):
+        """Stream audio from file to bridge."""
+        import wave
+        
+        self.is_running = True
+        log.info(f"📁 Playing test file: {self.filepath}")
+        
+        try:
+            # Convert to proper format if needed
+            temp_wav = "/tmp/bandophone_test_converted.wav"
+            subprocess.run([
+                "ffmpeg", "-y", "-i", self.filepath,
+                "-ar", "24000", "-ac", "1", "-f", "wav", temp_wav
+            ], capture_output=True)
+            
+            with wave.open(temp_wav, 'rb') as wf:
+                chunk_frames = 2400  # 100ms at 24kHz
+                
+                while self.is_running:
+                    chunk = wf.readframes(chunk_frames)
+                    if not chunk:
+                        log.info("File playback complete, committing audio...")
+                        # Commit the audio buffer to trigger response
+                        await bridge.commit_audio()
+                        # Wait for response
+                        await asyncio.sleep(10)
+                        break
+                    
+                    await bridge.send_audio(chunk)
+                    # Simulate real-time playback
+                    await asyncio.sleep(0.1)
+                    
+        except Exception as e:
+            log.error(f"File capture error: {e}")
+        
+        self.stop()
+    
+    def stop(self):
+        self.is_running = False
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Bandophone Realtime Bridge")
     parser.add_argument("--config", "-c", help="Config file")
@@ -518,6 +585,7 @@ async def main():
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--api-key", help="OpenAI API key")
     parser.add_argument("--list-voices", action="store_true", help="List voices")
+    parser.add_argument("--test-file", "-t", help="Test with audio file instead of live capture")
     
     args = parser.parse_args()
     
@@ -543,13 +611,20 @@ async def main():
         sys.exit(1)
     
     bridge = RealtimeBridge(config)
-    capture = PhoneCapture(config)
+    
+    # Use file capture for testing, or live capture from phone
+    if args.test_file:
+        capture = FileCapture(args.test_file, config)
+    else:
+        capture = PhoneCapture(config)
     
     try:
         # Connect to OpenAI first
         await bridge.connect()
         bridge.is_running = True
         bridge.transcript.start()
+        
+        log.info("Bridge ready. Listening...")
         
         # Then run capture and response handling in parallel
         await asyncio.gather(
