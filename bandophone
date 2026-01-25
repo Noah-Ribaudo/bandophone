@@ -1,0 +1,5 @@
+#!/bin/bash
+# Bandophone CLI wrapper
+
+cd "$(dirname "$0")/bridge"
+exec python3 cli.py "$@"

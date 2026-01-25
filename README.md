@@ -92,15 +92,68 @@ bandophone/
 
 ## Quick Start
 
-*Coming soon — we're still in the discovery phase.*
+### Prerequisites
+- Rooted Android phone (tested: Pixel 7 Pro)
+- ADB connected
+- Python 3.10+
+- OpenAI API key with Realtime API access
+
+### Installation
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/bandophone.git
+git clone https://github.com/Noah-Ribaudo/bandophone.git
 cd bandophone
+
+# Install Python dependencies
+pip install -r bridge/requirements.txt
 
 # Run diagnostics on your connected Android device
 ./scripts/diagnose.sh
+
+# Set up tinyalsa on phone (if not done)
+# See docs/AUDIO_ROUTING.md for device-specific setup
+```
+
+### Configuration
+
+```bash
+# CLI method
+./bandophone config --personality assistant --voice alloy
+./bandophone config --api-key sk-your-key-here
+
+# Or use the Web UI
+python bridge/web_ui.py
+# Open http://localhost:8080
+```
+
+### Available Voices
+- **alloy** - Neutral, balanced
+- **echo** - Warm, conversational male
+- **shimmer** - Clear, expressive female
+- **ash** - Soft, thoughtful
+- **ballad** - Warm, storytelling
+- **coral** - Bright, friendly
+- **sage** - Calm, wise
+- **verse** - Dynamic, engaging
+
+### Personality Presets
+- **assistant** (Bando) - General helpful assistant
+- **receptionist** (Alex) - Professional call answering
+- **concierge** (Morgan) - Personal concierge services
+- **screener** (Sam) - Call screening and filtering
+
+### Usage
+
+```bash
+# Check status
+./bandophone status
+
+# Test audio capture (during active call)
+./bandophone test-capture --transcribe
+
+# Run the full AI bridge (requires OpenAI API key)
+python bridge/realtime_bridge.py --verbose
 ```
 
 ## Research Notes
