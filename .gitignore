@@ -34,3 +34,4 @@ node_modules/
 __pycache__/
 *.pyc
 .venv/
+bridge/bandophone.json

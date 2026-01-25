@@ -42,18 +42,9 @@ OPENAI_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 
 # Function definition for ask_bando
 ASK_BANDO_FUNCTION = {
+    "type": "function",
     "name": "ask_bando",
-    "description": """Ask Bando (the full AI assistant) for help with tasks requiring tools or memory.
-    
-Use this when you need to:
-- Look up information from memory or past conversations
-- Check calendar, email, or files
-- Run shell commands or scripts
-- Control smart home devices
-- Search the web
-- Anything requiring external tools or persistent context
-
-Bando has full access to the user's systems and memory.""",
+    "description": "Ask Bando (the full AI assistant) for help with tasks requiring tools or memory. Use this for: looking up information, checking calendar/email/files, running commands, controlling smart home, web search, or anything needing tools or persistent context.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -63,12 +54,7 @@ Bando has full access to the user's systems and memory.""",
             },
             "context": {
                 "type": "string",
-                "description": "Brief context about the current conversation that might help."
-            },
-            "urgent": {
-                "type": "boolean",
-                "description": "Whether this needs immediate attention",
-                "default": False
+                "description": "Brief context about the current conversation."
             }
         },
         "required": ["request"]
@@ -261,7 +247,7 @@ class RealtimeBridge:
         url = f"{OPENAI_REALTIME_URL}?model={OPENAI_MODEL}"
         
         log.info("Connecting to OpenAI Realtime...")
-        self.ws = await websockets.connect(url, extra_headers=headers)
+        self.ws = await websockets.connect(url, additional_headers=headers)
         self.is_connected = True
         log.info("✅ Connected!")
         
@@ -437,12 +423,9 @@ class RealtimeBridge:
         self.pending_function_call = None
     
     async def start(self):
-        """Start the bridge."""
+        """Start the bridge - called after connect()."""
         self.is_running = True
         self.transcript.start()
-        
-        await self.connect()
-        await self.handle_responses()
     
     async def stop(self):
         """Stop the bridge."""
@@ -470,13 +453,14 @@ class PhoneCapture:
         self.is_running = False
     
     def check_call_active(self) -> bool:
-        cmd = 'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix get \"Audio DSP State\"\'"'
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        return "Telephony" in result.stdout
+        cmd = ['adb', 'shell', 'su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix get \'Audio DSP State\'"']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        # The ">" marker indicates current state
+        return "> Telephony" in result.stdout
     
     def setup_capture(self):
-        cmd = 'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix set \"Incall Capture Stream0\" \"UL_DL\"\'"'
-        subprocess.run(cmd, shell=True, capture_output=True)
+        cmd = ['adb', 'shell', 'su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix set \'Incall Capture Stream0\' \'UL_DL\'"']
+        subprocess.run(cmd, capture_output=True)
     
     async def capture_loop(self, bridge: RealtimeBridge):
         """Capture and stream audio to bridge."""
@@ -495,9 +479,9 @@ class PhoneCapture:
         rate = self.config.audio.capture_rate
         device = self.config.capture_device
         
-        cmd = f'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16\'"'
+        cmd = ['adb', 'shell', f'su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16"']
         
-        self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.process.stdout.read(44)  # Skip WAV header
         
         chunk_size = self.config.audio.capture_chunk_bytes
@@ -542,7 +526,7 @@ async def main():
             print(f"  {v}: {d}")
         return
     
-    config = BandophoneConfig.load(args.config) if args.config else BandophoneConfig()
+    config = BandophoneConfig.load(args.config or "bandophone.json")
     
     if args.voice:
         config.voice = args.voice
@@ -562,8 +546,14 @@ async def main():
     capture = PhoneCapture(config)
     
     try:
+        # Connect to OpenAI first
+        await bridge.connect()
+        bridge.is_running = True
+        bridge.transcript.start()
+        
+        # Then run capture and response handling in parallel
         await asyncio.gather(
-            bridge.start(),
+            bridge.handle_responses(),
             capture.capture_loop(bridge)
         )
     except KeyboardInterrupt:
