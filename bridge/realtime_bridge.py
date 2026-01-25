@@ -2,12 +2,9 @@
 """
 Bandophone Realtime Bridge
 
-Full-featured integration with OpenAI Realtime API.
-Handles capture, streaming, AI responses, and playback coordination.
+OpenAI Realtime API with ask_bando() function for Clawdbot integration.
 
-Usage:
-    python realtime_bridge.py --personality assistant --voice alloy
-    python realtime_bridge.py --config bandophone.json
+Fast voice conversation with on-demand access to full Clawdbot capabilities.
 """
 
 import asyncio
@@ -18,6 +15,7 @@ import struct
 import subprocess
 import sys
 import time
+import httpx
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
@@ -27,12 +25,11 @@ import logging
 try:
     import websockets
 except ImportError:
-    print("pip install websockets", file=sys.stderr)
+    print("pip install websockets httpx", file=sys.stderr)
     sys.exit(1)
 
-from config import BandophoneConfig, VOICES, PERSONALITIES, list_voices, list_personalities
+from config import BandophoneConfig, VOICES, DEFAULT_INSTRUCTIONS
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -44,123 +41,173 @@ OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
 OPENAI_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 
 
+# Function definition for ask_bando
+ASK_BANDO_FUNCTION = {
+    "name": "ask_bando",
+    "description": """Ask Bando (the full AI assistant) for help with tasks requiring tools or memory.
+    
+Use this when you need to:
+- Look up information from memory or past conversations
+- Check calendar, email, or files
+- Run shell commands or scripts
+- Control smart home devices
+- Search the web
+- Anything requiring external tools or persistent context
+
+Bando has full access to the user's systems and memory.""",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "request": {
+                "type": "string",
+                "description": "What you need Bando to do or look up. Be specific."
+            },
+            "context": {
+                "type": "string",
+                "description": "Brief context about the current conversation that might help."
+            },
+            "urgent": {
+                "type": "boolean",
+                "description": "Whether this needs immediate attention",
+                "default": False
+            }
+        },
+        "required": ["request"]
+    }
+}
+
+
+class ClawdbotBridge:
+    """Bridge to Clawdbot for ask_bando function calls."""
+    
+    def __init__(self, config: BandophoneConfig):
+        self.config = config
+        self.client = httpx.AsyncClient(timeout=30.0)
+    
+    async def ask_bando(self, request: str, context: str = "", urgent: bool = False) -> str:
+        """Send a request to Clawdbot and get response."""
+        
+        # Format the message
+        message = f"[Voice call request] {request}"
+        if context:
+            message = f"[Voice call context: {context}]\n\n{request}"
+        
+        log.info(f"Asking Bando: {request[:100]}...")
+        
+        try:
+            # Use Clawdbot's session API
+            # This sends a message to the main session and waits for response
+            response = await self.client.post(
+                f"{self.config.clawdbot_url}/api/sessions/send",
+                json={
+                    "sessionKey": self.config.clawdbot_session or "main",
+                    "message": message,
+                    "timeoutSeconds": 25
+                },
+                headers={"Authorization": f"Bearer {self.config.openai_api_key}"}  # TODO: proper auth
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                reply = data.get("reply", "I couldn't get a response from Bando.")
+                log.info(f"Bando replied: {reply[:100]}...")
+                return reply
+            else:
+                log.error(f"Clawdbot error: {response.status_code}")
+                return "Sorry, I couldn't reach Bando right now. Try again?"
+                
+        except httpx.TimeoutException:
+            log.warning("Clawdbot request timed out")
+            return "Bando is taking a while to respond. Can you try asking again?"
+        except Exception as e:
+            log.error(f"Clawdbot error: {e}")
+            return f"Had trouble reaching Bando: {str(e)[:50]}"
+    
+    async def sync_transcript(self, transcript: str):
+        """Sync call transcript to Clawdbot session."""
+        if not self.config.sync_to_clawdbot:
+            return
+        
+        try:
+            await self.client.post(
+                f"{self.config.clawdbot_url}/api/sessions/send",
+                json={
+                    "sessionKey": self.config.clawdbot_session or "main",
+                    "message": f"[Voice call transcript]\n\n{transcript}",
+                    "timeoutSeconds": 5
+                }
+            )
+        except Exception as e:
+            log.warning(f"Failed to sync transcript: {e}")
+
+
 class AudioResampler:
-    """Simple audio resampling utilities."""
+    """Audio resampling utilities."""
     
     @staticmethod
     def downsample(data: bytes, src_rate: int, dst_rate: int) -> bytes:
-        """Downsample audio by integer factor."""
         if src_rate == dst_rate:
             return data
-        
         ratio = src_rate // dst_rate
-        if ratio <= 0:
-            raise ValueError(f"Cannot downsample from {src_rate} to {dst_rate}")
-        
         samples = struct.unpack(f'<{len(data)//2}h', data)
         downsampled = samples[::ratio]
         return struct.pack(f'<{len(downsampled)}h', *downsampled)
     
     @staticmethod
     def upsample(data: bytes, src_rate: int, dst_rate: int) -> bytes:
-        """Upsample audio by integer factor (simple linear interpolation)."""
         if src_rate == dst_rate:
             return data
-        
         ratio = dst_rate // src_rate
-        if ratio <= 0:
-            raise ValueError(f"Cannot upsample from {src_rate} to {dst_rate}")
-        
         samples = struct.unpack(f'<{len(data)//2}h', data)
         upsampled = []
-        
         for i in range(len(samples) - 1):
             upsampled.append(samples[i])
-            # Linear interpolation
             for j in range(1, ratio):
                 interp = samples[i] + (samples[i+1] - samples[i]) * j // ratio
                 upsampled.append(interp)
-        
         upsampled.append(samples[-1])
         return struct.pack(f'<{len(upsampled)}h', *upsampled)
 
 
-class CallRecorder:
-    """Records call audio for later review."""
-    
-    def __init__(self, output_dir: str):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.current_file: Optional[Path] = None
-        self.file_handle = None
-        self.start_time: Optional[datetime] = None
-    
-    def start(self):
-        """Start a new recording."""
-        self.start_time = datetime.now()
-        filename = self.start_time.strftime("call_%Y%m%d_%H%M%S.raw")
-        self.current_file = self.output_dir / filename
-        self.file_handle = open(self.current_file, "wb")
-        log.info(f"Recording to {self.current_file}")
-    
-    def write(self, data: bytes):
-        """Write audio data to recording."""
-        if self.file_handle:
-            self.file_handle.write(data)
-    
-    def stop(self) -> Optional[Path]:
-        """Stop recording and return the file path."""
-        if self.file_handle:
-            self.file_handle.close()
-            self.file_handle = None
-            
-            duration = (datetime.now() - self.start_time).total_seconds()
-            log.info(f"Recording stopped: {duration:.1f}s")
-            
-            return self.current_file
-        return None
-
-
 class TranscriptLogger:
-    """Logs conversation transcripts."""
+    """Saves conversation transcripts."""
     
     def __init__(self, output_dir: str = "transcripts"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.current_file: Optional[Path] = None
-        self.file_handle = None
+        self.entries = []
+        self.start_time = None
+        self.current_file = None
     
     def start(self):
-        """Start a new transcript."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_file = self.output_dir / f"transcript_{timestamp}.txt"
-        self.file_handle = open(self.current_file, "w")
-        self.file_handle.write(f"Call started: {datetime.now().isoformat()}\n")
-        self.file_handle.write("-" * 50 + "\n\n")
+        self.start_time = datetime.now()
+        self.entries = []
+        filename = self.start_time.strftime("call_%Y%m%d_%H%M%S.txt")
+        self.current_file = self.output_dir / filename
     
-    def log_user(self, text: str):
-        """Log user speech."""
-        if self.file_handle:
-            self.file_handle.write(f"USER: {text}\n\n")
-            self.file_handle.flush()
+    def log(self, speaker: str, text: str):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = f"[{timestamp}] {speaker}: {text}"
+        self.entries.append(entry)
+        
+        # Write incrementally
+        if self.current_file:
+            with open(self.current_file, "a") as f:
+                f.write(entry + "\n")
     
-    def log_ai(self, text: str):
-        """Log AI speech."""
-        if self.file_handle:
-            self.file_handle.write(f"AI: {text}\n\n")
-            self.file_handle.flush()
+    def get_transcript(self) -> str:
+        return "\n".join(self.entries)
     
     def stop(self):
-        """Stop logging."""
-        if self.file_handle:
-            self.file_handle.write("-" * 50 + "\n")
-            self.file_handle.write(f"Call ended: {datetime.now().isoformat()}\n")
-            self.file_handle.close()
-            self.file_handle = None
+        if self.current_file and self.entries:
+            duration = (datetime.now() - self.start_time).total_seconds()
+            with open(self.current_file, "a") as f:
+                f.write(f"\n---\nCall duration: {duration:.1f}s\n")
+            log.info(f"Transcript saved: {self.current_file}")
 
 
 class RealtimeBridge:
-    """Main bridge between phone call and OpenAI Realtime API."""
+    """Main bridge between phone and OpenAI Realtime API with Clawdbot integration."""
     
     def __init__(self, config: BandophoneConfig):
         self.config = config
@@ -168,21 +215,21 @@ class RealtimeBridge:
         self.is_connected = False
         self.is_running = False
         
-        # Components
-        self.recorder = CallRecorder(config.recordings_dir) if config.save_recordings else None
-        self.transcript = TranscriptLogger()
+        self.clawdbot = ClawdbotBridge(config)
+        self.transcript = TranscriptLogger(config.transcripts_dir)
         self.resampler = AudioResampler()
         
-        # Callbacks for playback
+        # Playback callback
         self.on_audio_response: Optional[Callable[[bytes], None]] = None
         
         # State
-        self.current_ai_text = ""
+        self.current_response_text = ""
+        self.pending_function_call = None
         
     async def connect(self):
         """Connect to OpenAI Realtime API."""
         if not self.config.openai_api_key:
-            raise ValueError("OpenAI API key not set")
+            raise ValueError("OpenAI API key required")
         
         headers = {
             "Authorization": f"Bearer {self.config.openai_api_key}",
@@ -191,21 +238,21 @@ class RealtimeBridge:
         
         url = f"{OPENAI_REALTIME_URL}?model={OPENAI_MODEL}"
         
-        log.info("Connecting to OpenAI Realtime API...")
+        log.info("Connecting to OpenAI Realtime...")
         self.ws = await websockets.connect(url, extra_headers=headers)
         self.is_connected = True
-        log.info("✅ Connected to OpenAI")
+        log.info("✅ Connected!")
         
         await self._configure_session()
     
     async def _configure_session(self):
-        """Configure the Realtime session."""
+        """Configure Realtime session with ask_bando function."""
         config = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": self.config.get_instructions(),
-                "voice": self.config.get_voice(),
+                "instructions": self.config.instructions,
+                "voice": self.config.voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "input_audio_transcription": {
@@ -216,45 +263,40 @@ class RealtimeBridge:
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 700
-                }
+                },
+                "tools": [ASK_BANDO_FUNCTION],
+                "tool_choice": "auto"
             }
         }
         
         await self.ws.send(json.dumps(config))
-        log.info(f"Session configured: voice={self.config.get_voice()}, personality={self.config.personality}")
+        log.info(f"Session configured: voice={self.config.voice}")
     
     async def send_audio(self, audio_data: bytes):
         """Send captured audio to OpenAI."""
         if not self.is_connected:
             return
         
-        # Resample from capture rate to OpenAI rate
+        # Resample 48kHz → 24kHz
         resampled = self.resampler.downsample(
             audio_data,
             self.config.audio.capture_rate,
             self.config.audio.openai_rate
         )
         
-        # Save to recording
-        if self.recorder:
-            self.recorder.write(audio_data)
-        
-        # Send to OpenAI
         audio_b64 = base64.b64encode(resampled).decode('utf-8')
-        message = {
+        await self.ws.send(json.dumps({
             "type": "input_audio_buffer.append",
             "audio": audio_b64
-        }
-        
-        await self.ws.send(json.dumps(message))
+        }))
     
     async def handle_responses(self):
-        """Handle responses from OpenAI."""
+        """Handle responses from OpenAI Realtime."""
         try:
             async for message in self.ws:
                 if not self.is_running:
                     break
-                    
+                
                 data = json.loads(message)
                 event_type = data.get("type", "")
                 
@@ -265,80 +307,119 @@ class RealtimeBridge:
             self.is_connected = False
     
     async def _process_event(self, event_type: str, data: dict):
-        """Process a single event from OpenAI."""
+        """Process events from Realtime API."""
         
         if event_type == "session.created":
-            log.info("Session created")
-        
-        elif event_type == "session.updated":
-            log.debug("Session updated")
+            log.debug("Session created")
         
         elif event_type == "response.audio.delta":
-            # Received audio chunk from AI
+            # AI audio chunk
             audio_b64 = data.get("delta", "")
             if audio_b64:
                 audio_data = base64.b64decode(audio_b64)
-                
-                # Resample from OpenAI rate to playback rate
+                # Resample 24kHz → 48kHz for playback
                 resampled = self.resampler.upsample(
                     audio_data,
                     self.config.audio.openai_rate,
                     self.config.audio.playback_rate
                 )
-                
-                # Send to playback handler
                 if self.on_audio_response:
                     self.on_audio_response(resampled)
         
-        elif event_type == "response.audio.done":
-            log.debug("AI audio response complete")
-        
         elif event_type == "response.audio_transcript.delta":
-            # AI's speech being transcribed
             text = data.get("delta", "")
             if text:
-                self.current_ai_text += text
+                self.current_response_text += text
                 if self.config.verbose:
-                    print(f"\r🤖 {self.current_ai_text}", end="", flush=True)
+                    print(f"\r🤖 {self.current_response_text}", end="", flush=True)
         
         elif event_type == "response.audio_transcript.done":
-            # AI finished speaking
-            if self.current_ai_text:
+            if self.current_response_text:
                 if self.config.verbose:
-                    print()  # Newline after progressive output
-                log.info(f"AI: {self.current_ai_text}")
-                self.transcript.log_ai(self.current_ai_text)
-                self.current_ai_text = ""
+                    print()
+                self.transcript.log("AI", self.current_response_text)
+                self.current_response_text = ""
         
         elif event_type == "conversation.item.input_audio_transcription.completed":
-            # User's speech transcribed
             text = data.get("transcript", "")
             if text:
                 log.info(f"User: {text}")
-                self.transcript.log_user(text)
+                self.transcript.log("User", text)
         
-        elif event_type == "input_audio_buffer.speech_started":
-            log.debug("User started speaking")
+        elif event_type == "response.function_call_arguments.delta":
+            # Accumulate function call arguments
+            if self.pending_function_call is None:
+                self.pending_function_call = {"name": "", "arguments": ""}
+            self.pending_function_call["arguments"] += data.get("delta", "")
         
-        elif event_type == "input_audio_buffer.speech_stopped":
-            log.debug("User stopped speaking")
+        elif event_type == "response.function_call_arguments.done":
+            # Function call complete - execute it
+            if self.pending_function_call:
+                await self._execute_function_call(data)
+        
+        elif event_type == "response.output_item.added":
+            item = data.get("item", {})
+            if item.get("type") == "function_call":
+                self.pending_function_call = {
+                    "name": item.get("name", ""),
+                    "call_id": item.get("call_id", ""),
+                    "arguments": ""
+                }
         
         elif event_type == "error":
             error = data.get("error", {})
             log.error(f"API Error: {error.get('message', data)}")
     
+    async def _execute_function_call(self, data: dict):
+        """Execute ask_bando function and return result."""
+        if not self.pending_function_call:
+            return
+        
+        name = self.pending_function_call.get("name", "")
+        call_id = self.pending_function_call.get("call_id") or data.get("call_id", "")
+        args_str = self.pending_function_call.get("arguments", "{}")
+        
+        log.info(f"Function call: {name}")
+        
+        if name == "ask_bando":
+            try:
+                args = json.loads(args_str)
+                request = args.get("request", "")
+                context = args.get("context", "")
+                urgent = args.get("urgent", False)
+                
+                # Call Clawdbot
+                result = await self.clawdbot.ask_bando(request, context, urgent)
+                
+            except json.JSONDecodeError:
+                result = "Sorry, I had trouble understanding that request."
+            except Exception as e:
+                log.error(f"Function call error: {e}")
+                result = f"Error: {str(e)[:100]}"
+        else:
+            result = f"Unknown function: {name}"
+        
+        # Send result back to Realtime
+        await self.ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": result
+            }
+        }))
+        
+        # Trigger response generation
+        await self.ws.send(json.dumps({"type": "response.create"}))
+        
+        self.pending_function_call = None
+    
     async def start(self):
         """Start the bridge."""
         self.is_running = True
-        
-        # Start recording/transcription
-        if self.recorder:
-            self.recorder.start()
         self.transcript.start()
         
         await self.connect()
-        
-        # Run response handler
         await self.handle_responses()
     
     async def stop(self):
@@ -346,9 +427,10 @@ class RealtimeBridge:
         self.is_running = False
         self.is_connected = False
         
-        # Stop recording/transcription
-        if self.recorder:
-            self.recorder.stop()
+        # Sync transcript to Clawdbot
+        if self.transcript.entries:
+            await self.clawdbot.sync_transcript(self.transcript.get_transcript())
+        
         self.transcript.stop()
         
         if self.ws:
@@ -358,37 +440,26 @@ class RealtimeBridge:
 
 
 class PhoneCapture:
-    """Handles audio capture from phone via ADB."""
+    """Audio capture from phone via ADB."""
     
     def __init__(self, config: BandophoneConfig):
         self.config = config
-        self.process: Optional[subprocess.Popen] = None
+        self.process = None
         self.is_running = False
     
-    def _get_adb_prefix(self) -> str:
-        """Get ADB command prefix."""
-        if self.config.adb_device:
-            return f"adb -s {self.config.adb_device}"
-        return "adb"
-    
     def check_call_active(self) -> bool:
-        """Check if a call is currently active."""
-        cmd = f'{self._get_adb_prefix()} shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix get \"Audio DSP State\"\'"'
+        cmd = 'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix get \"Audio DSP State\"\'"'
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         return "Telephony" in result.stdout
     
     def setup_capture(self):
-        """Configure mixer for capture."""
-        adb = self._get_adb_prefix()
-        cmd = f'{adb} shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix set \"Incall Capture Stream0\" \"UL_DL\"\'"'
+        cmd = 'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix set \"Incall Capture Stream0\" \"UL_DL\"\'"'
         subprocess.run(cmd, shell=True, capture_output=True)
-        log.info("Capture configured for UL_DL mode")
     
     async def capture_loop(self, bridge: RealtimeBridge):
-        """Capture audio and send to bridge."""
+        """Capture and stream audio to bridge."""
         self.is_running = True
         
-        # Wait for call to be active
         log.info("Waiting for active call...")
         while self.is_running and not self.check_call_active():
             await asyncio.sleep(1)
@@ -396,24 +467,16 @@ class PhoneCapture:
         if not self.is_running:
             return
         
-        log.info("📞 Call detected! Starting capture...")
+        log.info("📞 Call active! Starting capture...")
         self.setup_capture()
         
-        # Start tinycap process
-        adb = self._get_adb_prefix()
         rate = self.config.audio.capture_rate
         device = self.config.capture_device
         
-        cmd = f'{adb} shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16\'"'
+        cmd = f'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16\'"'
         
-        self.process = subprocess.Popen(
-            cmd, shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL
-        )
-        
-        # Skip WAV header
-        self.process.stdout.read(44)
+        self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.process.stdout.read(44)  # Skip WAV header
         
         chunk_size = self.config.audio.capture_chunk_bytes
         
@@ -421,14 +484,13 @@ class PhoneCapture:
             try:
                 chunk = self.process.stdout.read(chunk_size)
                 if not chunk:
-                    # Check if call ended
                     if not self.check_call_active():
                         log.info("Call ended")
                         break
                     continue
                 
                 await bridge.send_audio(chunk)
-                await asyncio.sleep(0.01)  # Small delay to prevent overwhelming
+                await asyncio.sleep(0.01)
                 
             except Exception as e:
                 log.error(f"Capture error: {e}")
@@ -437,7 +499,6 @@ class PhoneCapture:
         self.stop()
     
     def stop(self):
-        """Stop capture."""
         self.is_running = False
         if self.process:
             self.process.terminate()
@@ -446,60 +507,39 @@ class PhoneCapture:
 
 async def main():
     parser = argparse.ArgumentParser(description="Bandophone Realtime Bridge")
-    parser.add_argument("--config", "-c", help="Config file path")
-    parser.add_argument("--personality", "-p", choices=list(PERSONALITIES.keys()), help="Personality preset")
-    parser.add_argument("--voice", "-v", choices=list(VOICES.keys()), help="Voice to use")
-    parser.add_argument("--list-voices", action="store_true", help="List available voices")
-    parser.add_argument("--list-personalities", action="store_true", help="List available personalities")
-    parser.add_argument("--transcribe-only", action="store_true", help="Only transcribe, no AI response")
+    parser.add_argument("--config", "-c", help="Config file")
+    parser.add_argument("--voice", "-v", choices=list(VOICES.keys()), help="Voice")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--api-key", help="OpenAI API key (or set OPENAI_API_KEY env)")
+    parser.add_argument("--api-key", help="OpenAI API key")
+    parser.add_argument("--list-voices", action="store_true", help="List voices")
     
     args = parser.parse_args()
     
     if args.list_voices:
-        list_voices()
+        for v, d in VOICES.items():
+            print(f"  {v}: {d}")
         return
     
-    if args.list_personalities:
-        list_personalities()
-        return
+    config = BandophoneConfig.load(args.config) if args.config else BandophoneConfig()
     
-    # Load config
-    if args.config:
-        config = BandophoneConfig.load(args.config)
-    else:
-        config = BandophoneConfig()
-    
-    # Override with CLI args
-    if args.personality:
-        config.personality = args.personality
     if args.voice:
         config.voice = args.voice
-    if args.transcribe_only:
-        config.transcribe_only = args.transcribe_only
     if args.verbose:
         config.verbose = args.verbose
     if args.api_key:
         config.openai_api_key = args.api_key
     
-    # Get API key from env if not set
     if not config.openai_api_key:
         config.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
     
     if not config.openai_api_key:
-        print("Error: OpenAI API key required. Set OPENAI_API_KEY or use --api-key", file=sys.stderr)
+        print("Set OPENAI_API_KEY or use --api-key", file=sys.stderr)
         sys.exit(1)
     
-    # Create bridge and capture
     bridge = RealtimeBridge(config)
     capture = PhoneCapture(config)
     
-    # TODO: Set up playback handler when Android app is ready
-    # bridge.on_audio_response = playback_handler
-    
     try:
-        # Run bridge and capture in parallel
         await asyncio.gather(
             bridge.start(),
             capture.capture_loop(bridge)

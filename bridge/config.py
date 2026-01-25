@@ -1,7 +1,7 @@
 """
 Bandophone Configuration
 
-Centralized config for voices, personalities, and audio settings.
+Simplified config: voices and settings only, no presets.
 """
 
 from dataclasses import dataclass, field
@@ -11,51 +11,31 @@ import os
 
 # OpenAI Realtime voice options
 VOICES = {
-    "alloy": "Neutral, balanced voice",
-    "echo": "Warm, conversational male voice", 
-    "shimmer": "Clear, expressive female voice",
-    "ash": "Soft, thoughtful voice",
-    "ballad": "Warm, storytelling voice",
-    "coral": "Bright, friendly voice",
-    "sage": "Calm, wise voice",
-    "verse": "Dynamic, engaging voice"
+    "alloy": "Neutral, balanced",
+    "ash": "Soft, thoughtful", 
+    "ballad": "Warm, storytelling",
+    "coral": "Bright, friendly",
+    "echo": "Warm male",
+    "sage": "Calm, wise",
+    "shimmer": "Clear female",
+    "verse": "Dynamic, engaging"
 }
 
-# Preset personalities
-PERSONALITIES = {
-    "assistant": {
-        "name": "Bando",
-        "voice": "alloy",
-        "instructions": """You are Bando, a helpful AI assistant on a phone call.
-Keep responses brief and natural - this is a voice conversation, not text.
-Be warm, friendly, and conversational. Ask clarifying questions if needed.
-If the audio is unclear, politely ask them to repeat."""
-    },
-    "receptionist": {
-        "name": "Alex",
-        "voice": "coral",
-        "instructions": """You are Alex, a professional receptionist.
-Answer calls politely, take messages, and help callers reach the right person.
-Be efficient but friendly. Collect name, callback number, and reason for call.
-If the person they're looking for isn't available, offer to take a message."""
-    },
-    "concierge": {
-        "name": "Morgan",
-        "voice": "sage",
-        "instructions": """You are Morgan, a personal concierge assistant.
-Help with reservations, appointments, and information lookup.
-Be proactive in offering suggestions. Confirm all details before ending the call.
-Speak with confidence and warmth."""
-    },
-    "screener": {
-        "name": "Sam", 
-        "voice": "echo",
-        "instructions": """You are Sam, a call screener.
-Your job is to determine if the call is important or spam.
-Ask who is calling, what company they're from, and the purpose of the call.
-Be polite but efficient. Report your assessment at the end."""
-    }
-}
+# Default system prompt - positions Realtime as voice interface to Bando
+DEFAULT_INSTRUCTIONS = """You are the voice interface for Bando, an AI assistant.
+
+Keep responses conversational and brief - this is a phone call.
+When you need to:
+- Look something up
+- Check calendar, email, or files  
+- Run commands or use tools
+- Access memory or past context
+
+Call the ask_bando function. It connects to the full Bando system with all capabilities.
+
+For simple chat, respond directly. For anything requiring tools or memory, use ask_bando.
+
+Be natural and friendly. If audio is unclear, ask for clarification."""
 
 
 @dataclass
@@ -66,45 +46,40 @@ class AudioConfig:
     playback_rate: int = 48000     # For injection back to call
     channels: int = 1
     bit_depth: int = 16
-    chunk_ms: int = 100            # Chunk size in milliseconds
+    chunk_ms: int = 100
     
     @property
     def capture_chunk_bytes(self) -> int:
         return int(self.capture_rate * self.channels * (self.bit_depth // 8) * self.chunk_ms / 1000)
-    
-    @property
-    def openai_chunk_bytes(self) -> int:
-        return int(self.openai_rate * self.channels * (self.bit_depth // 8) * self.chunk_ms / 1000)
 
 
 @dataclass  
 class BandophoneConfig:
     """Main configuration."""
-    # API
+    # API Keys
     openai_api_key: str = ""
+    clawdbot_url: str = "http://localhost:4440"  # For ask_bando
+    clawdbot_session: str = ""  # Session key for Clawdbot
     
-    # Personality
-    personality: str = "assistant"
-    custom_instructions: Optional[str] = None
+    # Voice
     voice: str = "alloy"
+    instructions: str = DEFAULT_INSTRUCTIONS
     
     # Audio
     audio: AudioConfig = field(default_factory=AudioConfig)
     
     # Device
-    adb_device: Optional[str] = None  # None = auto-detect
-    capture_device: int = 20           # PCM device for capture
-    playback_device: int = 18          # PCM device for playback
+    adb_device: Optional[str] = None
+    capture_device: int = 20
+    playback_device: int = 18
     
-    # Behavior
-    auto_answer: bool = False          # Auto-answer incoming calls
-    transcribe_only: bool = False      # Just transcribe, no AI response
-    save_recordings: bool = True       # Save call recordings
-    recordings_dir: str = "recordings"
+    # Features
+    save_transcripts: bool = True
+    transcripts_dir: str = "transcripts"
+    sync_to_clawdbot: bool = True  # Send transcripts to Clawdbot session
     
-    # Logging
+    # Debug
     verbose: bool = False
-    log_file: Optional[str] = None
     
     @classmethod
     def load(cls, path: str = "bandophone.json") -> "BandophoneConfig":
@@ -112,11 +87,8 @@ class BandophoneConfig:
         if os.path.exists(path):
             with open(path) as f:
                 data = json.load(f)
-            
-            # Handle nested audio config
             if "audio" in data:
                 data["audio"] = AudioConfig(**data["audio"])
-            
             return cls(**data)
         return cls()
     
@@ -124,46 +96,25 @@ class BandophoneConfig:
         """Save config to JSON file."""
         data = {
             "openai_api_key": self.openai_api_key,
-            "personality": self.personality,
-            "custom_instructions": self.custom_instructions,
+            "clawdbot_url": self.clawdbot_url,
+            "clawdbot_session": self.clawdbot_session,
             "voice": self.voice,
+            "instructions": self.instructions,
             "audio": {
                 "capture_rate": self.audio.capture_rate,
                 "openai_rate": self.audio.openai_rate,
                 "playback_rate": self.audio.playback_rate,
-                "channels": self.audio.channels,
-                "bit_depth": self.audio.bit_depth,
-                "chunk_ms": self.audio.chunk_ms,
             },
             "adb_device": self.adb_device,
             "capture_device": self.capture_device,
             "playback_device": self.playback_device,
-            "auto_answer": self.auto_answer,
-            "transcribe_only": self.transcribe_only,
-            "save_recordings": self.save_recordings,
-            "recordings_dir": self.recordings_dir,
+            "save_transcripts": self.save_transcripts,
+            "transcripts_dir": self.transcripts_dir,
+            "sync_to_clawdbot": self.sync_to_clawdbot,
             "verbose": self.verbose,
-            "log_file": self.log_file,
         }
-        
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
-    
-    def get_instructions(self) -> str:
-        """Get the system instructions for the AI."""
-        if self.custom_instructions:
-            return self.custom_instructions
-        
-        personality = PERSONALITIES.get(self.personality, PERSONALITIES["assistant"])
-        return personality["instructions"]
-    
-    def get_voice(self) -> str:
-        """Get the voice to use."""
-        if self.voice:
-            return self.voice
-        
-        personality = PERSONALITIES.get(self.personality, PERSONALITIES["assistant"])
-        return personality["voice"]
 
 
 def list_voices():
@@ -171,12 +122,3 @@ def list_voices():
     print("Available voices:")
     for voice, desc in VOICES.items():
         print(f"  {voice}: {desc}")
-
-
-def list_personalities():
-    """Print available personalities."""
-    print("Available personalities:")
-    for name, config in PERSONALITIES.items():
-        print(f"  {name}: {config['name']} ({config['voice']})")
-        print(f"    {config['instructions'][:80]}...")
-        print()

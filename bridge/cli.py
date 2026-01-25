@@ -2,13 +2,12 @@
 """
 Bandophone CLI
 
-Command-line interface for configuration and control.
-
 Usage:
-    bandophone config --voice shimmer --personality receptionist
     bandophone status
-    bandophone call --wait
+    bandophone config --voice shimmer
+    bandophone config --api-key sk-...
     bandophone test-capture
+    bandophone run
 """
 
 import argparse
@@ -16,59 +15,8 @@ import subprocess
 import sys
 import os
 import json
-from pathlib import Path
 
-from config import BandophoneConfig, VOICES, PERSONALITIES
-
-
-def cmd_config(args):
-    """Configure Bandophone settings."""
-    config_path = args.config or "bandophone.json"
-    
-    # Load existing or create new
-    config = BandophoneConfig.load(config_path)
-    
-    # Update values
-    if args.voice:
-        if args.voice not in VOICES:
-            print(f"Unknown voice: {args.voice}")
-            print(f"Available: {', '.join(VOICES.keys())}")
-            return 1
-        config.voice = args.voice
-        print(f"Voice set to: {args.voice}")
-    
-    if args.personality:
-        if args.personality not in PERSONALITIES:
-            print(f"Unknown personality: {args.personality}")
-            print(f"Available: {', '.join(PERSONALITIES.keys())}")
-            return 1
-        config.personality = args.personality
-        config.voice = PERSONALITIES[args.personality]["voice"]
-        print(f"Personality set to: {args.personality} (voice: {config.voice})")
-    
-    if args.instructions:
-        config.custom_instructions = args.instructions
-        print(f"Custom instructions set")
-    
-    if args.api_key:
-        config.openai_api_key = args.api_key
-        print("API key set")
-    
-    if args.show:
-        print(json.dumps({
-            "personality": config.personality,
-            "voice": config.voice,
-            "custom_instructions": config.custom_instructions[:50] + "..." if config.custom_instructions and len(config.custom_instructions) > 50 else config.custom_instructions,
-            "api_key": "***" if config.openai_api_key else "(not set)",
-            "capture_device": config.capture_device,
-            "playback_device": config.playback_device,
-        }, indent=2))
-        return 0
-    
-    # Save
-    config.save(config_path)
-    print(f"Config saved to {config_path}")
-    return 0
+from config import BandophoneConfig, VOICES
 
 
 def cmd_status(args):
@@ -77,14 +25,12 @@ def cmd_status(args):
     
     # Check ADB
     result = subprocess.run("adb devices", shell=True, capture_output=True, text=True)
-    devices = [l for l in result.stdout.strip().split('\n')[1:] if l.strip()]
+    devices = [l for l in result.stdout.strip().split('\n')[1:] if l.strip() and 'device' in l]
     
     if devices:
-        print(f"📱 Android devices: {len(devices)}")
-        for d in devices:
-            print(f"   {d}")
+        print(f"📱 Device: Connected")
     else:
-        print("❌ No Android devices connected")
+        print("❌ Device: Not connected")
     
     # Check call state
     result = subprocess.run(
@@ -93,94 +39,90 @@ def cmd_status(args):
     )
     
     if "Telephony" in result.stdout:
-        print("📞 Call state: ACTIVE")
-    elif "error" in result.stdout.lower() or result.returncode != 0:
-        print("⚠️  Call state: Cannot determine (is device rooted?)")
+        print("📞 Call: Active")
     else:
-        print("📞 Call state: Idle")
-    
-    # Check tinycap
-    result = subprocess.run(
-        'adb shell "su -c \'test -f /data/local/tmp/tinycap && echo ok\'"',
-        shell=True, capture_output=True, text=True
-    )
-    
-    if "ok" in result.stdout:
-        print("✅ tinycap: Installed")
-    else:
-        print("❌ tinycap: Not found (run setup first)")
+        print("📞 Call: Idle")
     
     # Check config
-    config_path = args.config or "bandophone.json"
-    if os.path.exists(config_path):
-        config = BandophoneConfig.load(config_path)
-        print(f"\n⚙️  Config: {config_path}")
-        print(f"   Voice: {config.voice}")
-        print(f"   Personality: {config.personality}")
-        print(f"   API Key: {'✅ Set' if config.openai_api_key else '❌ Not set'}")
-    else:
-        print(f"\n⚠️  No config file (run 'bandophone config' to create)")
+    config = BandophoneConfig.load(args.config)
+    print(f"\n⚙️  Voice: {config.voice}")
+    print(f"🔑 API Key: {'Set' if config.openai_api_key else 'Not set'}")
+    print(f"📝 Transcripts: {config.transcripts_dir}/")
     
+    return 0
+
+
+def cmd_config(args):
+    """Configure settings."""
+    config = BandophoneConfig.load(args.config)
+    
+    if args.voice:
+        if args.voice not in VOICES:
+            print(f"Unknown voice. Options: {', '.join(VOICES.keys())}")
+            return 1
+        config.voice = args.voice
+        print(f"Voice: {args.voice}")
+    
+    if args.api_key:
+        config.openai_api_key = args.api_key
+        print("API key set")
+    
+    if args.instructions:
+        config.instructions = args.instructions
+        print("Instructions updated")
+    
+    if args.show:
+        print(json.dumps({
+            "voice": config.voice,
+            "api_key": "***" if config.openai_api_key else "(not set)",
+            "instructions": config.instructions[:80] + "..." if len(config.instructions) > 80 else config.instructions,
+            "sync_to_clawdbot": config.sync_to_clawdbot,
+        }, indent=2))
+        return 0
+    
+    config.save(args.config)
+    print(f"Saved to {args.config}")
     return 0
 
 
 def cmd_test_capture(args):
     """Test audio capture."""
-    duration = args.duration or 5
+    duration = args.duration
     output = args.output or "/tmp/bandophone_test.wav"
     
-    print(f"Testing capture for {duration}s...")
-    
-    # Check for active call
+    # Check call
     result = subprocess.run(
         'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix get \"Audio DSP State\"\'"',
         shell=True, capture_output=True, text=True
     )
     
-    if "Telephony" not in result.stdout:
-        print("⚠️  No active call - capture may fail")
-        if not args.force:
-            print("   Use --force to capture anyway, or make a call first")
-            return 1
+    if "Telephony" not in result.stdout and not args.force:
+        print("⚠️  No active call. Use --force to capture anyway.")
+        return 1
     
-    # Set capture mode
+    print(f"Capturing {duration}s...")
+    
+    # Capture
     subprocess.run(
         'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinymix set \"Incall Capture Stream0\" \"UL_DL\"\'"',
         shell=True, capture_output=True
     )
     
-    # Capture
-    raw_file = "/data/local/tmp/test_capture.raw"
     subprocess.run(
-        f'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && timeout {duration+1} /data/local/tmp/tinycap {raw_file} -D 0 -d 20 -c 1 -r 48000 -b 16\'"',
+        f'adb shell "su -c \'export LD_LIBRARY_PATH=/data/local/tmp && timeout {duration+1} /data/local/tmp/tinycap /data/local/tmp/test.raw -D 0 -d 20 -c 1 -r 48000 -b 16\'"',
         shell=True
     )
     
-    # Pull and convert
-    subprocess.run(f"adb pull {raw_file} /tmp/capture.raw", shell=True, capture_output=True)
-    
-    # Convert to WAV (skip broken header)
-    subprocess.run(
-        f"tail -c +45 /tmp/capture.raw | ffmpeg -y -f s16le -ar 48000 -ac 1 -i - {output}",
-        shell=True, capture_output=True
-    )
+    subprocess.run("adb pull /data/local/tmp/test.raw /tmp/test.raw", shell=True, capture_output=True)
+    subprocess.run(f"tail -c +45 /tmp/test.raw | ffmpeg -y -f s16le -ar 48000 -ac 1 -i - {output}", shell=True, capture_output=True)
     
     if os.path.exists(output):
         size = os.path.getsize(output)
-        duration_actual = size / (48000 * 2)  # 16-bit mono
-        print(f"✅ Captured {duration_actual:.1f}s to {output}")
+        print(f"✅ Captured to {output} ({size} bytes)")
         
         if args.transcribe:
             print("Transcribing...")
-            result = subprocess.run(
-                f"whisper {output} --model tiny --output_format txt --output_dir /tmp --language en",
-                shell=True, capture_output=True, text=True
-            )
-            
-            txt_file = output.replace('.wav', '.txt')
-            if os.path.exists(f"/tmp/{Path(output).stem}.txt"):
-                with open(f"/tmp/{Path(output).stem}.txt") as f:
-                    print(f"\n📝 Transcript:\n{f.read()}")
+            subprocess.run(f"whisper {output} --model tiny --output_format txt --output_dir /tmp --language en", shell=True)
     else:
         print("❌ Capture failed")
         return 1
@@ -189,87 +131,74 @@ def cmd_test_capture(args):
 
 
 def cmd_voices(args):
-    """List available voices."""
+    """List voices."""
     print("Available voices:\n")
     for voice, desc in VOICES.items():
-        marker = "  " if not args.all else ("▶ " if voice == "alloy" else "  ")
-        print(f"{marker}{voice}: {desc}")
-    
-    print("\nUse with: bandophone config --voice <name>")
+        print(f"  {voice}: {desc}")
     return 0
 
 
-def cmd_personalities(args):
-    """List available personalities."""
-    print("Available personalities:\n")
-    for name, config in PERSONALITIES.items():
-        print(f"  {name}: {config['name']}")
-        print(f"    Voice: {config['voice']}")
-        print(f"    {config['instructions'][:60]}...")
-        print()
+def cmd_run(args):
+    """Run the realtime bridge."""
+    print("Starting Bandophone bridge...")
+    print("(Use Ctrl+C to stop)\n")
     
-    print("Use with: bandophone config --personality <name>")
-    return 0
+    cmd = ["python3", "realtime_bridge.py"]
+    if args.verbose:
+        cmd.append("--verbose")
+    if args.config:
+        cmd.extend(["--config", args.config])
+    
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.execvp("python3", cmd)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Bandophone - Give your AI a real phone",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  bandophone status                    Check system status
-  bandophone config --voice shimmer    Set voice
-  bandophone config --personality receptionist
-  bandophone voices                    List available voices
-  bandophone test-capture              Test audio capture
-        """
-    )
+    parser = argparse.ArgumentParser(description="Bandophone - Voice channel for Clawdbot")
+    parser.add_argument("--config", "-c", default="bandophone.json", help="Config file")
     
-    parser.add_argument("--config", "-c", help="Config file path", default="bandophone.json")
-    
-    subparsers = parser.add_subparsers(dest="command", help="Command")
-    
-    # config
-    p_config = subparsers.add_parser("config", help="Configure settings")
-    p_config.add_argument("--voice", "-v", help="Set voice")
-    p_config.add_argument("--personality", "-p", help="Set personality preset")
-    p_config.add_argument("--instructions", "-i", help="Set custom instructions")
-    p_config.add_argument("--api-key", help="Set OpenAI API key")
-    p_config.add_argument("--show", "-s", action="store_true", help="Show current config")
+    subs = parser.add_subparsers(dest="command")
     
     # status
-    p_status = subparsers.add_parser("status", help="Check system status")
+    subs.add_parser("status", help="Check status")
+    
+    # config
+    p = subs.add_parser("config", help="Configure")
+    p.add_argument("--voice", "-v", help="Set voice")
+    p.add_argument("--api-key", help="Set OpenAI API key")
+    p.add_argument("--instructions", "-i", help="Set custom instructions")
+    p.add_argument("--show", "-s", action="store_true", help="Show config")
     
     # test-capture
-    p_capture = subparsers.add_parser("test-capture", help="Test audio capture")
-    p_capture.add_argument("--duration", "-d", type=int, default=5, help="Capture duration in seconds")
-    p_capture.add_argument("--output", "-o", help="Output file path")
-    p_capture.add_argument("--transcribe", "-t", action="store_true", help="Transcribe after capture")
-    p_capture.add_argument("--force", "-f", action="store_true", help="Capture even without active call")
+    p = subs.add_parser("test-capture", help="Test capture")
+    p.add_argument("--duration", "-d", type=int, default=5)
+    p.add_argument("--output", "-o")
+    p.add_argument("--transcribe", "-t", action="store_true")
+    p.add_argument("--force", "-f", action="store_true")
     
     # voices
-    p_voices = subparsers.add_parser("voices", help="List available voices")
-    p_voices.add_argument("--all", "-a", action="store_true", help="Show all details")
+    subs.add_parser("voices", help="List voices")
     
-    # personalities
-    p_pers = subparsers.add_parser("personalities", help="List available personalities")
+    # run
+    p = subs.add_parser("run", help="Run the bridge")
+    p.add_argument("--verbose", action="store_true")
     
     args = parser.parse_args()
     
-    if args.command == "config":
-        return cmd_config(args)
-    elif args.command == "status":
+    if args.command == "status":
         return cmd_status(args)
+    elif args.command == "config":
+        return cmd_config(args)
     elif args.command == "test-capture":
         return cmd_test_capture(args)
     elif args.command == "voices":
         return cmd_voices(args)
-    elif args.command == "personalities":
-        return cmd_personalities(args)
+    elif args.command == "run":
+        return cmd_run(args)
     else:
         parser.print_help()
-        return 0
+    
+    return 0
 
 
 if __name__ == "__main__":
