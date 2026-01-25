@@ -46,15 +46,16 @@ All over the regular phone network, with a real phone number that anyone can cal
 
 ## Project Status
 
-### Phase 1: Discovery (Current)
-- [ ] Map PCM devices for call audio on Pixel 7 Pro
-- [ ] Identify required mixer controls
-- [ ] Verify audio capture during active call
-- [ ] Document sample rates and formats
+### Phase 1: Discovery ✅ COMPLETE
+- [x] Map PCM devices for call audio on Pixel 7 Pro
+- [x] Identify required mixer controls (`Incall Capture Stream0` = UL_DL)
+- [x] Verify audio capture during active call
+- [x] Document sample rates (48kHz, not 16kHz!)
 
-### Phase 2: Proof of Concept
-- [ ] Capture call audio to file
-- [ ] Play audio file into active call
+### Phase 2: Proof of Concept (In Progress)
+- [x] Capture call audio to file
+- [x] Transcribe with Whisper — working!
+- [ ] **Play audio into active call** — blocked, needs Android app
 - [ ] Basic streaming to external endpoint
 
 ### Phase 3: AI Integration
@@ -66,6 +67,10 @@ All over the regular phone network, with a real phone number that anyone can cal
 - [ ] Android app with background service
 - [ ] WebSocket control API
 - [ ] Documentation for other devices
+
+### Current Blockers
+
+**Audio Injection**: Direct ALSA writes (`tinyplay`) bypass Android's AudioFlinger routing. We need an Android app using `AudioTrack` with `USAGE_VOICE_COMMUNICATION` to properly route audio to the telephony transmit path. See [docs/PLAYBACK_RESEARCH.md](docs/PLAYBACK_RESEARCH.md).
 
 ## Architecture
 
