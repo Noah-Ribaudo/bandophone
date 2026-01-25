@@ -125,3 +125,15 @@ tinyplay /data/local/tmp/response.wav -D 0 -d 18 -c 1 -r 48000 -b 16
 3. Find PCM devices with similar names
 4. Document mixer control IDs and PCM device numbers
 5. Open a PR!
+
+### Confirmed Working (2026-01-24)
+
+**Capture Test Results:**
+- ✅ UL_DL mode captures both sides of call
+- ✅ 48kHz sample rate confirmed via Whisper transcription
+- ✅ T-Mobile voicemail audio captured and transcribed correctly
+- ❌ DL-only and UL-only modes captured 0 frames (may need different device or config)
+
+**Sample Transcription:**
+- Input: 7.9s voicemail audio
+- Output: "I will be helping you set up your voicemail in three easy steps, creating a path."
