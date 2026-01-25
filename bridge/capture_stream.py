@@ -89,8 +89,10 @@ def stream_capture(output_type: str, output_target: str):
         
     elif output_type == "stdout":
         # Stream to stdout via adb exec-out
-        # Note: This requires the capture to be running and readable
+        # WARNING: ADB piping can be unreliable - may get 0 bytes
+        # Consider using SSH to Termux or polling file-based capture instead
         print("Streaming to stdout (Ctrl+C to stop)...", file=sys.stderr)
+        print("⚠️  ADB stdout piping may be unreliable", file=sys.stderr)
         
         # Start tinycap and cat the output
         process = subprocess.Popen(
