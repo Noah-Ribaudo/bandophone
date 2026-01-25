@@ -137,3 +137,18 @@ tinyplay /data/local/tmp/response.wav -D 0 -d 18 -c 1 -r 48000 -b 16
 **Sample Transcription:**
 - Input: 7.9s voicemail audio
 - Output: "I will be helping you set up your voicemail in three easy steps, creating a path."
+
+---
+
+## Playback Status
+
+**⚠️ Audio injection NOT working via command line.**
+
+See [PLAYBACK_RESEARCH.md](PLAYBACK_RESEARCH.md) for details.
+
+Attempted:
+- Direct PCM writes to device 18, 19, 29 — writes succeed but not routed to call
+- IN_CALL_MUSIC mixer mode — no effect
+- termux-media-player — plays through speaker, not call
+
+**Solution needed**: Android app using AudioTrack with proper stream type/usage flags.
