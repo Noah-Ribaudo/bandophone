@@ -35,3 +35,11 @@ __pycache__/
 *.pyc
 .venv/
 bridge/bandophone.json
+
+# Android build
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
