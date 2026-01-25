@@ -15,7 +15,7 @@
     
     <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
     <!-- Keep alive -->
@@ -29,6 +29,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Bandophone"
+        android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="34">
         
         <activity
@@ -44,7 +45,7 @@
         <service
             android:name=".AudioInjectionService"
             android:exported="false"
-            android:foregroundServiceType="phoneCall" />
+            android:foregroundServiceType="mediaPlayback" />
 
     </application>
 

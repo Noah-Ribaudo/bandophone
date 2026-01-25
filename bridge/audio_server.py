@@ -39,7 +39,7 @@ class AudioServer:
             self.server.close()
             await self.server.wait_closed()
     
-    async def _handle_client(self, websocket: websockets.WebSocketServerProtocol, path: str):
+    async def _handle_client(self, websocket: websockets.WebSocketServerProtocol):
         """Handle a new client connection."""
         client_addr = websocket.remote_address
         log.info(f"Android client connected: {client_addr}")

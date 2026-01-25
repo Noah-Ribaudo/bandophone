@@ -83,7 +83,7 @@ fun BandophoneScreen(
     onStartService: (String) -> Unit,
     onStopService: () -> Unit
 ) {
-    var bridgeUrl by remember { mutableStateOf("ws://192.168.1.100:8765") }
+    var bridgeUrl by remember { mutableStateOf("ws://192.168.4.82:8765") }
     var isRunning by remember { mutableStateOf(false) }
     
     Scaffold(
