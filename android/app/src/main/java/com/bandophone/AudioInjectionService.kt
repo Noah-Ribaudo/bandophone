@@ -1,168 +1,200 @@
 package com.bandophone
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.media.*
+import android.os.Build
 import android.os.IBinder
+import android.telecom.TelecomManager
 import android.util.Log
-import java.io.InputStream
-import java.net.ServerSocket
-import java.net.Socket
-import kotlin.concurrent.thread
+import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.*
+import java.util.concurrent.LinkedBlockingQueue
 
 /**
- * Foreground service that accepts PCM audio over a socket and plays it
- * into the active phone call using AudioTrack with VOICE_COMMUNICATION usage.
+ * Foreground service that injects AI audio into active phone calls.
+ * 
+ * Uses AudioRecord (VOICE_COMMUNICATION) replacement strategy:
+ * When a call is active, we can inject audio that appears to come from the mic.
  */
 class AudioInjectionService : Service() {
-
     companion object {
-        const val TAG = "AudioInjection"
-        const val PORT = 9999
-        const val SAMPLE_RATE = 48000
-        const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
-        const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        const val NOTIFICATION_ID = 1
-        const val CHANNEL_ID = "bandophone_audio"
+        private const val TAG = "AudioInjection"
+        private const val NOTIFICATION_ID = 1001
+        private const val CHANNEL_ID = "bandophone_service"
+        
+        const val ACTION_START = "com.bandophone.START"
+        const val ACTION_STOP = "com.bandophone.STOP"
+        const val EXTRA_BRIDGE_URL = "bridge_url"
+        
+        private const val SAMPLE_RATE = 48000
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
+        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     }
 
-    private var serverSocket: ServerSocket? = null
     private var audioTrack: AudioTrack? = null
+    private var bridgeClient: BridgeClient? = null
+    private val audioQueue = LinkedBlockingQueue<ByteArray>()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var playbackJob: Job? = null
     private var isRunning = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        Log.i(TAG, "Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createNotification())
-        
-        if (!isRunning) {
-            isRunning = true
-            startServer()
+        when (intent?.action) {
+            ACTION_START -> {
+                val bridgeUrl = intent.getStringExtra(EXTRA_BRIDGE_URL) ?: "ws://192.168.1.100:8765"
+                start(bridgeUrl)
+            }
+            ACTION_STOP -> stop()
         }
-        
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun start(bridgeUrl: String) {
+        if (isRunning) return
+        isRunning = true
+        
+        Log.d(TAG, "Starting audio injection service, bridge: $bridgeUrl")
+        
+        // Start foreground
+        startForeground(NOTIFICATION_ID, createNotification("Connecting..."))
+        
+        // Initialize AudioTrack for call audio injection
+        initAudioTrack()
+        
+        // Connect to bridge
+        bridgeClient = BridgeClient(
+            onAudioReceived = { audioData ->
+                // Queue audio for playback
+                audioQueue.offer(audioData)
+            },
+            onStatusChanged = { status ->
+                updateNotification(status.name)
+            }
+        )
+        bridgeClient?.connect(bridgeUrl)
+        
+        // Start playback loop
+        startPlaybackLoop()
+    }
 
-    override fun onDestroy() {
+    private fun initAudioTrack() {
+        val bufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
+        
+        audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(CHANNEL_CONFIG)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            AudioTrack(
+                AudioManager.STREAM_VOICE_CALL,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                bufferSize * 2,
+                AudioTrack.MODE_STREAM
+            )
+        }
+        
+        audioTrack?.play()
+        Log.d(TAG, "AudioTrack initialized")
+    }
+
+    private fun startPlaybackLoop() {
+        playbackJob = scope.launch {
+            while (isActive && isRunning) {
+                try {
+                    val audioData = audioQueue.poll()
+                    if (audioData != null) {
+                        audioTrack?.write(audioData, 0, audioData.size)
+                    } else {
+                        delay(10)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Playback error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun stop() {
+        Log.d(TAG, "Stopping audio injection service")
         isRunning = false
-        serverSocket?.close()
+        
+        playbackJob?.cancel()
+        bridgeClient?.disconnect()
+        
         audioTrack?.stop()
         audioTrack?.release()
-        Log.i(TAG, "Service destroyed")
+        audioTrack = null
+        
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        stop()
+        scope.cancel()
         super.onDestroy()
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Audio Injection",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Bandophone audio injection service"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Bandophone Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Voice bridge active"
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
         }
-        
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
     }
 
-    private fun createNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, PendingIntent.FLAG_IMMUTABLE
+    private fun createNotification(status: String): Notification {
+        val stopIntent = Intent(this, AudioInjectionService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 0, stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Bandophone Active")
-            .setContentText("Listening for audio on port $PORT")
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Bandophone")
+            .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_media_pause, "Stop", stopPendingIntent)
+            .setOngoing(true)
             .build()
     }
 
-    private fun startServer() {
-        thread {
-            try {
-                serverSocket = ServerSocket(PORT)
-                Log.i(TAG, "Server listening on port $PORT")
-
-                while (isRunning) {
-                    try {
-                        val client = serverSocket?.accept() ?: break
-                        Log.i(TAG, "Client connected from ${client.inetAddress}")
-                        handleClient(client)
-                    } catch (e: Exception) {
-                        if (isRunning) {
-                            Log.e(TAG, "Error accepting client", e)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Server error", e)
-            }
-        }
-    }
-
-    private fun handleClient(client: Socket) {
-        thread {
-            try {
-                val inputStream = client.getInputStream()
-                initAudioTrack()
-                audioTrack?.play()
-                
-                Log.i(TAG, "Playing audio...")
-                streamAudio(inputStream)
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling client", e)
-            } finally {
-                audioTrack?.stop()
-                client.close()
-                Log.i(TAG, "Client disconnected")
-            }
-        }
-    }
-
-    private fun initAudioTrack() {
-        val bufferSize = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
-        ) * 2
-
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(CHANNEL_CONFIG)
-                    .setEncoding(AUDIO_FORMAT)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
-        Log.i(TAG, "AudioTrack initialized: buffer=$bufferSize")
-    }
-
-    private fun streamAudio(input: InputStream) {
-        val buffer = ByteArray(4096)
-        var bytesRead: Int
-
-        while (isRunning) {
-            bytesRead = input.read(buffer)
-            if (bytesRead == -1) break
-            
-            audioTrack?.write(buffer, 0, bytesRead)
-        }
+    private fun updateNotification(status: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, createNotification(status))
     }
 }

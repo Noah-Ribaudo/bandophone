@@ -28,6 +28,7 @@ except ImportError:
     sys.exit(1)
 
 from config import BandophoneConfig, VOICES, DEFAULT_INSTRUCTIONS
+from audio_server import AudioServer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,10 +84,11 @@ class ClawdbotBridge:
             cmd = [
                 "clawdbot", "agent",
                 "--message", message,
-                "--json"
+                "--json",
+                "--agent", "main"  # Use main agent
             ]
             
-            # Add session targeting if configured
+            # Override with specific session if configured
             if self.config.clawdbot_session:
                 cmd.extend(["--session-id", self.config.clawdbot_session])
             
@@ -133,7 +135,8 @@ class ClawdbotBridge:
         try:
             cmd = [
                 "clawdbot", "agent",
-                "--message", f"[Voice call transcript]\n\n{transcript}"
+                "--message", f"[Voice call transcript]\n\n{transcript}",
+                "--agent", "main"
             ]
             if self.config.clawdbot_session:
                 cmd.extend(["--session-id", self.config.clawdbot_session])
@@ -217,7 +220,7 @@ class TranscriptLogger:
 class RealtimeBridge:
     """Main bridge between phone and OpenAI Realtime API with Clawdbot integration."""
     
-    def __init__(self, config: BandophoneConfig):
+    def __init__(self, config: BandophoneConfig, audio_server: Optional[AudioServer] = None):
         self.config = config
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
@@ -226,6 +229,7 @@ class RealtimeBridge:
         self.clawdbot = ClawdbotBridge(config)
         self.transcript = TranscriptLogger(config.transcripts_dir)
         self.resampler = AudioResampler()
+        self.audio_server = audio_server
         
         # Playback callback
         self.on_audio_response: Optional[Callable[[bytes], None]] = None
@@ -349,6 +353,11 @@ class RealtimeBridge:
                     self.config.audio.openai_rate,
                     self.config.audio.playback_rate
                 )
+                
+                # Send to Android app via WebSocket
+                if self.audio_server and self.audio_server.has_clients:
+                    asyncio.create_task(self.audio_server.send_audio(resampled))
+                
                 if self.on_audio_response:
                     self.on_audio_response(resampled)
         
@@ -586,6 +595,7 @@ async def main():
     parser.add_argument("--api-key", help="OpenAI API key")
     parser.add_argument("--list-voices", action="store_true", help="List voices")
     parser.add_argument("--test-file", "-t", help="Test with audio file instead of live capture")
+    parser.add_argument("--server-port", type=int, default=8765, help="WebSocket server port for Android app")
     
     args = parser.parse_args()
     
@@ -610,7 +620,11 @@ async def main():
         print("Set OPENAI_API_KEY or use --api-key", file=sys.stderr)
         sys.exit(1)
     
-    bridge = RealtimeBridge(config)
+    # Start audio server for Android app
+    audio_server = AudioServer(port=args.server_port)
+    await audio_server.start()
+    
+    bridge = RealtimeBridge(config, audio_server=audio_server)
     
     # Use file capture for testing, or live capture from phone
     if args.test_file:
@@ -625,6 +639,7 @@ async def main():
         bridge.transcript.start()
         
         log.info("Bridge ready. Listening...")
+        log.info(f"Android app can connect to ws://YOUR_MAC_IP:{args.server_port}")
         
         # Then run capture and response handling in parallel
         await asyncio.gather(
@@ -636,6 +651,7 @@ async def main():
     finally:
         capture.stop()
         await bridge.stop()
+        await audio_server.stop()
 
 
 if __name__ == "__main__":
