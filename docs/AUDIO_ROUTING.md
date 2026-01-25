@@ -69,17 +69,21 @@ Device-specific findings for call audio capture.
 | 168 | Incall Sink Mute | Off/On |
 | 169 | Incall Mic Gain (dB) | -300 to 30 |
 
+### Actual Sample Rate (IMPORTANT!)
+
+**The PCM devices output at 48000Hz**, not 16000Hz as expected for VoLTE. This was confirmed via Whisper transcription testing — 48kHz produces correct speech, 16kHz sounds slowed down.
+
 ### Expected Call Flow
 
 To capture both sides of a call:
 1. Set `Incall Capture Stream0` to `UL_DL`
 2. Open `pcmC0D20c` for capture
-3. Read S16_LE data at 16000Hz (VoLTE standard)
+3. Read S16_LE data at **48000Hz** (not 16kHz!)
 
 To inject audio (AI responses) into a call:
 1. Set `Incall Playback Stream0` to `On`
 2. Open `pcmC0D18p` for playback
-3. Write S16_LE data at 16000Hz
+3. Write S16_LE data at **48000Hz**
 
 ### Test Commands
 
@@ -87,19 +91,24 @@ To inject audio (AI responses) into a call:
 # Set capture to mixed uplink+downlink
 tinymix set "Incall Capture Stream0" "UL_DL"
 
-# Capture 5 seconds during active call
-tinycap /data/local/tmp/call.wav -D 0 -d 20 -c 1 -r 16000 -b 16 -T 5
+# Capture 5 seconds during active call (48kHz!)
+tinycap /data/local/tmp/call.raw -D 0 -d 20 -c 1 -r 48000 -b 16
+
+# Convert to WAV (skip tinycap's broken header)
+tail -c +45 call.raw > call.pcm
+ffmpeg -f s16le -ar 48000 -ac 1 -i call.pcm call.wav
 
 # Play audio into call
-tinyplay /data/local/tmp/response.wav -D 0 -d 18 -c 1 -r 16000 -b 16
+tinyplay /data/local/tmp/response.wav -D 0 -d 18 -c 1 -r 48000 -b 16
 ```
 
 ### Notes
 
 - Devices may only be accessible during an active call
 - SELinux must be permissive: `setenforce 0`
-- VoLTE (T-Mobile) likely uses 16000Hz AMR-WB
+- **Sample rate is 48kHz** (AOC resamples from VoLTE's native rate)
 - Audio HAL may need the call to be in "voice call" mode (check `Audio DSP State`)
+- tinycap writes a malformed WAV header — convert via ffmpeg
 
 ### TODO
 - [ ] Verify capture works during active call
