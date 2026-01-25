@@ -510,8 +510,22 @@ class PhoneCapture:
         
         cmd = ['adb', 'shell', f'su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16"']
         
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        self.process.stdout.read(44)  # Skip WAV header
+        # Retry capture start if it fails (audio stream may not be ready)
+        for attempt in range(5):
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Check if capture started successfully by reading first chunk
+            try:
+                header = self.process.stdout.read(44)  # WAV header
+                if len(header) == 44:
+                    log.info(f"Capture started on attempt {attempt + 1}")
+                    break
+            except:
+                pass
+            self.process.terminate()
+            await asyncio.sleep(0.1)  # Quick retry
+        else:
+            log.error("Failed to start capture after 5 attempts")
+            return
         
         chunk_size = self.config.audio.capture_chunk_bytes
         
