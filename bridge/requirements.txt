@@ -1,10 +1,6 @@
 # Bandophone Python dependencies
 websockets>=12.0
-python-dotenv>=1.0.0
 
-# Optional: Better audio resampling
+# Optional: Better audio resampling (for production quality)
 # scipy>=1.11.0
 # numpy>=1.24.0
-
-# Optional: Web UI
-# flask>=3.0.0

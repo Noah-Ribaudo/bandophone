@@ -15,7 +15,6 @@ import struct
 import subprocess
 import sys
 import time
-import httpx
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
@@ -78,14 +77,13 @@ Bando has full access to the user's systems and memory.""",
 
 
 class ClawdbotBridge:
-    """Bridge to Clawdbot for ask_bando function calls."""
+    """Bridge to Clawdbot for ask_bando function calls via CLI."""
     
     def __init__(self, config: BandophoneConfig):
         self.config = config
-        self.client = httpx.AsyncClient(timeout=30.0)
     
     async def ask_bando(self, request: str, context: str = "", urgent: bool = False) -> str:
-        """Send a request to Clawdbot and get response."""
+        """Send a request to Clawdbot and get response via CLI."""
         
         # Format the message
         message = f"[Voice call request] {request}"
@@ -95,48 +93,72 @@ class ClawdbotBridge:
         log.info(f"Asking Bando: {request[:100]}...")
         
         try:
-            # Use Clawdbot's session API
-            # This sends a message to the main session and waits for response
-            response = await self.client.post(
-                f"{self.config.clawdbot_url}/api/sessions/send",
-                json={
-                    "sessionKey": self.config.clawdbot_session or "main",
-                    "message": message,
-                    "timeoutSeconds": 25
-                },
-                headers={"Authorization": f"Bearer {self.config.openai_api_key}"}  # TODO: proper auth
+            # Use clawdbot agent CLI to send message and get response
+            cmd = [
+                "clawdbot", "agent",
+                "--message", message,
+                "--json"
+            ]
+            
+            # Add session targeting if configured
+            if self.config.clawdbot_session:
+                cmd.extend(["--session-id", self.config.clawdbot_session])
+            
+            # Run async subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                reply = data.get("reply", "I couldn't get a response from Bando.")
-                log.info(f"Bando replied: {reply[:100]}...")
-                return reply
-            else:
-                log.error(f"Clawdbot error: {response.status_code}")
-                return "Sorry, I couldn't reach Bando right now. Try again?"
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=30.0
+            )
+            
+            if process.returncode == 0:
+                try:
+                    result = json.loads(stdout.decode())
+                    reply = result.get("reply", result.get("response", ""))
+                    if reply:
+                        log.info(f"Bando replied: {reply[:100]}...")
+                        return reply
+                except json.JSONDecodeError:
+                    # Maybe plain text response
+                    reply = stdout.decode().strip()
+                    if reply:
+                        return reply
+            
+            log.error(f"Clawdbot error: {stderr.decode()[:200]}")
+            return "Sorry, I couldn't reach Bando right now."
                 
-        except httpx.TimeoutException:
+        except asyncio.TimeoutError:
             log.warning("Clawdbot request timed out")
-            return "Bando is taking a while to respond. Can you try asking again?"
+            return "Bando is taking a while to respond. Try again?"
         except Exception as e:
             log.error(f"Clawdbot error: {e}")
             return f"Had trouble reaching Bando: {str(e)[:50]}"
     
     async def sync_transcript(self, transcript: str):
-        """Sync call transcript to Clawdbot session."""
+        """Sync call transcript to Clawdbot session via CLI."""
         if not self.config.sync_to_clawdbot:
             return
         
         try:
-            await self.client.post(
-                f"{self.config.clawdbot_url}/api/sessions/send",
-                json={
-                    "sessionKey": self.config.clawdbot_session or "main",
-                    "message": f"[Voice call transcript]\n\n{transcript}",
-                    "timeoutSeconds": 5
-                }
+            cmd = [
+                "clawdbot", "agent",
+                "--message", f"[Voice call transcript]\n\n{transcript}"
+            ]
+            if self.config.clawdbot_session:
+                cmd.extend(["--session-id", self.config.clawdbot_session])
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
+            await asyncio.wait_for(process.communicate(), timeout=10.0)
+            
         except Exception as e:
             log.warning(f"Failed to sync transcript: {e}")
 
