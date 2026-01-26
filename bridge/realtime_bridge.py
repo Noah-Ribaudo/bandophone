@@ -508,43 +508,59 @@ class PhoneCapture:
         rate = self.config.audio.capture_rate
         device = self.config.capture_device
         
-        cmd = ['adb', 'shell', f'su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap /dev/stdout -D 0 -d {device} -c 1 -r {rate} -b 16"']
+        # Use file-based capture (ADB stdout piping unreliable for binary)
+        capture_file = "/data/local/tmp/bandophone_capture.raw"
         
-        # Retry capture start if it fails (audio stream may not be ready)
-        for attempt in range(5):
-            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Check if capture started successfully by reading first chunk
-            try:
-                header = self.process.stdout.read(44)  # WAV header
-                if len(header) == 44:
-                    log.info(f"Capture started on attempt {attempt + 1}")
-                    break
-            except:
-                pass
-            self.process.terminate()
-            await asyncio.sleep(0.1)  # Quick retry
-        else:
-            log.error("Failed to start capture after 5 attempts")
-            return
+        # Start tinycap in background writing to file
+        start_cmd = f'''su -c "export LD_LIBRARY_PATH=/data/local/tmp && /data/local/tmp/tinycap {capture_file} -D 0 -d {device} -c 1 -r {rate} -b 16 &"'''
+        subprocess.run(['adb', 'shell', start_cmd], capture_output=True)
+        
+        self.capture_file = capture_file
+        self.capture_offset = 44  # Skip WAV header
+        log.info("Capture started (file-based)")
         
         chunk_size = self.config.audio.capture_chunk_bytes
+        read_offset = 44  # Skip WAV header
         
         while self.is_running:
             try:
-                chunk = self.process.stdout.read(chunk_size)
-                if not chunk:
-                    if not self.check_call_active():
-                        log.info("Call ended")
-                        break
+                # Check if call is still active
+                if not self.check_call_active():
+                    log.info("Call ended")
+                    break
+                
+                # Get current file size
+                result = subprocess.run(
+                    ['adb', 'shell', f'su -c "stat -c%s {capture_file}"'],
+                    capture_output=True, text=True
+                )
+                try:
+                    file_size = int(result.stdout.strip())
+                except:
+                    await asyncio.sleep(0.05)
                     continue
                 
-                await bridge.send_audio(chunk)
-                await asyncio.sleep(0.01)
+                # Read new data if available
+                available = file_size - read_offset
+                if available >= chunk_size:
+                    # Pull chunk from device
+                    result = subprocess.run(
+                        ['adb', 'shell', f'su -c "dd if={capture_file} bs=1 skip={read_offset} count={chunk_size} 2>/dev/null"'],
+                        capture_output=True
+                    )
+                    chunk = result.stdout
+                    if chunk:
+                        await bridge.send_audio(chunk)
+                        read_offset += len(chunk)
+                
+                await asyncio.sleep(0.05)  # 50ms polling
                 
             except Exception as e:
                 log.error(f"Capture error: {e}")
                 break
         
+        # Stop tinycap
+        subprocess.run(['adb', 'shell', 'su -c "killall tinycap"'], capture_output=True)
         self.stop()
     
     def stop(self):
