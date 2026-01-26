@@ -67,3 +67,61 @@ corrected = gpt_fix(f"Fix any obvious transcription errors in this phone call tr
 - Word Error Rate (WER)
 - Common substitution patterns
 - Audio levels (are we clipping?)
+
+---
+
+## Implementation Complete (2026-01-26)
+
+### New TinyALSA Audio Module
+
+Created `bridge/tinyalsa_audio.py` - production-ready module for phone call audio routing.
+
+**Features:**
+- **Audio Injection:** Converts OpenAI Realtime API audio (24kHz mono PCM16) → stereo → device 19 with rate trick
+- **Audio Capture:** Captures from device 20 (48kHz stereo) → converts to 16kHz mono for Whisper
+- **Mixer Control:** Manages tinymix settings (capture enable, mic mute)
+- **Error Handling:** Comprehensive error handling and logging throughout
+- **Async Architecture:** Fully async/await compatible with realtime_bridge.py
+
+**Classes:**
+- `TinyALSAConfig` - Configuration constants for verified working setup
+- `AudioConverter` - Audio format conversion (mono↔stereo, resampling)
+- `TinyALSAMixer` - Mixer control via ADB (capture enable, mic mute, call detection)
+- `TinyALSAInjector` - Audio injection into calls
+- `TinyALSACapture` - Audio capture from calls with format conversion
+- `TinyALSAAudioBridge` - High-level API combining all functionality
+
+**Audio Pipeline:**
+```
+OpenAI Realtime (24kHz mono) 
+  → TinyALSAInjector.inject_audio()
+  → mono_to_stereo() 
+  → push to device
+  → tinyplay device 19 (told 16kHz, actually 24kHz stereo)
+  → Phone call output ✅
+
+Phone call input
+  → tinycap device 20 (48kHz stereo)
+  → TinyALSACapture.read_capture_chunk()
+  → stereo_to_mono()
+  → resample 48kHz → 16kHz
+  → Whisper-ready audio ✅
+```
+
+**Testing:**
+- Created `bridge/test_tinyalsa.py` - comprehensive test suite
+- Tests: mixer control, audio conversion, injection, capture, full bridge
+- Run with: `python3 bridge/test_tinyalsa.py`
+
+**Next Steps for Integration:**
+1. Update `realtime_bridge.py` to use `TinyALSAAudioBridge` instead of current PhoneCapture
+2. Replace resampling logic with AudioConverter methods
+3. Add streaming injection support for real-time audio
+4. Test full duplex: simultaneous capture + injection during live call
+5. Add Whisper prompt with conversation context for better transcription
+
+**Key Insights:**
+- 16kHz mono is Whisper's native format - conversion is critical for accuracy
+- Stereo requirement for injection is hardware-specific (Pixel 7 Pro)
+- Rate "trick" (tell device 16kHz, feed 24kHz) is reproducible magic
+- Mixer settings reset between calls - must re-enable capture each time
