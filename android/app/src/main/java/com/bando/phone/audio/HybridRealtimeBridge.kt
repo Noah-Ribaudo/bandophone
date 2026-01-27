@@ -492,12 +492,12 @@ class HybridRealtimeBridge(
                 
                 "response.function_call_arguments.done" -> {
                     // Function call from AI - bridge to Clawdbot
-                    val callId = event.optString("call_id")
+                    val functionCallId = event.optString("call_id")
                     val name = event.optString("name")
                     val arguments = event.optString("arguments")
                     
                     Log.i(TAG, "Function call: $name($arguments)")
-                    handleFunctionCall(callId, name, arguments)
+                    handleFunctionCall(functionCallId, name, arguments)
                 }
                 
                 "error" -> {
@@ -523,11 +523,11 @@ class HybridRealtimeBridge(
     /**
      * Handle function call from Realtime API - bridge to Clawdbot
      */
-    private fun handleFunctionCall(callId: String, name: String, argumentsJson: String) {
+    private fun handleFunctionCall(functionCallId: String, name: String, argumentsJson: String) {
         val bridge = clawdbotBridge
         if (bridge == null) {
             // No Clawdbot - return error
-            sendFunctionResult(callId, "Tool execution unavailable - Clawdbot not connected")
+            sendFunctionResult(functionCallId, "Tool execution unavailable - Clawdbot not connected")
             return
         }
         
@@ -549,13 +549,13 @@ class HybridRealtimeBridge(
                 val result = bridge.executeTool(name, args)
                 
                 if (result.success && result.result != null) {
-                    sendFunctionResult(callId, result.result)
+                    sendFunctionResult(functionCallId, result.result)
                 } else {
-                    sendFunctionResult(callId, result.error ?: "Tool execution failed")
+                    sendFunctionResult(functionCallId, result.error ?: "Tool execution failed")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Function call error: ${e.message}")
-                sendFunctionResult(callId, "Error: ${e.message}")
+                sendFunctionResult(functionCallId, "Error: ${e.message}")
             }
         }
     }
@@ -563,13 +563,13 @@ class HybridRealtimeBridge(
     /**
      * Send function result back to Realtime API
      */
-    private fun sendFunctionResult(callId: String, result: String) {
+    private fun sendFunctionResult(functionCallId: String, result: String) {
         // Create function output item
         val outputEvent = JSONObject().apply {
             put("type", "conversation.item.create")
             put("item", JSONObject().apply {
                 put("type", "function_call_output")
-                put("call_id", callId)
+                put("call_id", functionCallId)
                 put("output", result)
             })
         }
@@ -581,7 +581,7 @@ class HybridRealtimeBridge(
         }
         webSocket?.send(responseEvent.toString())
         
-        Log.d(TAG, "Sent function result for $callId")
+        Log.d(TAG, "Sent function result for $functionCallId")
     }
     
     /**

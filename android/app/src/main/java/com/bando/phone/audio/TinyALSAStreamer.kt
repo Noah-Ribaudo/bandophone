@@ -157,9 +157,11 @@ class TinyALSAStreamer {
 
                 // Start persistent tinyplay reading from FIFO
                 // Run in background so we can write to FIFO
+                // NOTE: Using -r 16000 is the magic trick - device 19 internally runs at 48kHz
+                // When we tell it 16kHz but feed 24kHz stereo content, playback speed is correct
                 val playCmd = arrayOf(
                     "su", "-c",
-                    "$TINYPLAY $PLAYBACK_FIFO -D $CARD -d $PLAYBACK_DEVICE -c 2 -r 48000 -b 16"
+                    "$TINYPLAY $PLAYBACK_FIFO -D $CARD -d $PLAYBACK_DEVICE -c 2 -r 16000 -b 16"
                 )
                 playbackProcess = Runtime.getRuntime().exec(playCmd)
                 Log.d(TAG, "Started persistent tinyplay process")
