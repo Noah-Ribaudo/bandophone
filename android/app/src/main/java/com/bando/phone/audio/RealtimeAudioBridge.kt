@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import okhttp3.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -206,7 +207,7 @@ class RealtimeAudioBridge(
         val config = JSONObject().apply {
             put("type", "session.update")
             put("session", JSONObject().apply {
-                put("modalities", listOf("text", "audio"))
+                put("modalities", JSONArray().apply { put("text"); put("audio") })
                 put("instructions", instructions)
                 put("voice", voice)
                 put("input_audio_format", "pcm16")

@@ -17,15 +17,19 @@ import android.util.Log
 class CallAudioManager(
     private val context: Context,
     private val apiKey: String,
-    private val instructions: String = "You are a helpful AI assistant on a phone call. Be conversational and natural."
+    private val instructions: String = "You are a helpful AI assistant on a phone call. Be conversational and natural.",
+    private val voice: String = "alloy"
 ) {
     companion object {
         private const val TAG = "CallAudioManager"
     }
     
     private var audioManager: AudioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private var bridge: RealtimeAudioBridge? = null
+    private var bridge: HybridRealtimeBridge? = null
     private var currentCall: Call? = null
+    
+    // Use TinyALSA hybrid approach for far-end audio capture
+    private val useHybridBridge = true
     
     // Callbacks
     var onBridgeStarted: (() -> Unit)? = null
@@ -76,10 +80,12 @@ class CallAudioManager(
     }
     
     private fun startBridge() {
-        bridge = RealtimeAudioBridge(
+        Log.i(TAG, "Starting HybridRealtimeBridge (TinyALSA + Realtime API)")
+        
+        bridge = HybridRealtimeBridge(
             apiKey = apiKey,
             instructions = instructions,
-            voice = "alloy"  // or "onyx" for male voice
+            voice = voice
         ).apply {
             onConnected = {
                 Log.i(TAG, "Bridge connected to OpenAI")
@@ -95,6 +101,14 @@ class CallAudioManager(
                 if (isFinal) {
                     this@CallAudioManager.onTranscript?.invoke(text)
                 }
+            }
+            
+            onSpeechStarted = {
+                Log.i(TAG, "Far-end speech detected (barging active)")
+            }
+            
+            onSpeechEnded = {
+                Log.i(TAG, "Far-end speech ended")
             }
             
             onError = { error ->
@@ -147,12 +161,6 @@ class CallAudioManager(
 class BandoInCallService : InCallService() {
     companion object {
         private const val TAG = "BandoInCallService"
-        
-        // Get API key from BuildConfig or secure storage
-        private fun getApiKey(): String {
-            // TODO: Load from secure storage or BuildConfig
-            return "your-api-key-here"
-        }
     }
     
     private var callAudioManager: CallAudioManager? = null
@@ -180,15 +188,21 @@ class BandoInCallService : InCallService() {
         super.onCreate()
         Log.i(TAG, "BandoInCallService created")
         
+        // Get API key from secure storage
+        val apiKey = com.bandophone.ApiKeyManager.getApiKey(this)
+        if (apiKey.isNullOrBlank()) {
+            Log.e(TAG, "No API key configured!")
+            return
+        }
+        
+        val instructions = com.bandophone.ApiKeyManager.getInstructions(this)
+        val voice = com.bandophone.ApiKeyManager.getVoice(this)
+        
         callAudioManager = CallAudioManager(
             context = this,
-            apiKey = getApiKey(),
-            instructions = """
-                You are a helpful AI assistant on a phone call.
-                Be conversational, natural, and concise.
-                Listen carefully and respond appropriately.
-                If interrupted, stop speaking immediately.
-            """.trimIndent()
+            apiKey = apiKey,
+            instructions = instructions,
+            voice = voice
         )
     }
     

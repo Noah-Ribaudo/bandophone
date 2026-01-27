@@ -44,10 +44,15 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 BandophoneScreen(
                     onStartService = { url -> startBridge(url) },
-                    onStopService = { stopBridge() }
+                    onStopService = { stopBridge() },
+                    onOpenSettings = { openSettings() }
                 )
             }
         }
+    }
+    
+    private fun openSettings() {
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
     
     private fun checkPermissions() {
@@ -81,15 +86,22 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun BandophoneScreen(
     onStartService: (String) -> Unit,
-    onStopService: () -> Unit
+    onStopService: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     var bridgeUrl by remember { mutableStateOf("ws://192.168.4.82:8765") }
     var isRunning by remember { mutableStateOf(false) }
+    val hasApiKey = remember { ApiKeyManager.hasApiKey(BandophoneApp.instance) }
     
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("🦝 Bandophone") }
+                title = { Text("🦝 Bandophone") },
+                actions = {
+                    TextButton(onClick = onOpenSettings) {
+                        Text("⚙️ Settings")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -106,11 +118,63 @@ fun BandophoneScreen(
             )
             
             Text(
-                "Connects to the bridge on your Mac and injects AI responses into phone calls.",
+                "Choose between external bridge (Mac) or native OpenAI integration.",
                 style = MaterialTheme.typography.bodyMedium
             )
             
             Spacer(modifier = Modifier.height(16.dp))
+            
+            // Native AI Status Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (hasApiKey) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.errorContainer
+                    }
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "🤖 Native AI Integration",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (hasApiKey) {
+                        Text(
+                            "✅ OpenAI API key configured",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Native AI will answer calls automatically when set as default phone app.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            "⚠️ No API key configured",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Go to Settings to configure OpenAI API key for native integration.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Divider()
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Text(
+                "External Bridge (Legacy)",
+                style = MaterialTheme.typography.titleMedium
+            )
             
             OutlinedTextField(
                 value = bridgeUrl,

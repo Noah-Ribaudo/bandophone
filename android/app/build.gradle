@@ -33,6 +33,7 @@ android {
 
     buildFeatures {
         compose true
+        buildConfig true
     }
 
     composeOptions {
@@ -58,6 +59,9 @@ dependencies {
     
     // Coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    
+    // Security - Encrypted SharedPreferences
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     
     // Debug
     debugImplementation 'androidx.compose.ui:ui-tooling'
