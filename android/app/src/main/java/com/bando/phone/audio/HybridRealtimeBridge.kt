@@ -385,6 +385,35 @@ class HybridRealtimeBridge(
                     put("required", JSONArray().apply { put("to"); put("message") })
                 })
             })
+            
+            // Get current time
+            put(JSONObject().apply {
+                put("type", "function")
+                put("name", "get_time")
+                put("description", "Get the current time and date")
+                put("parameters", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject())
+                    put("required", JSONArray())
+                })
+            })
+            
+            // Web search
+            put(JSONObject().apply {
+                put("type", "function")
+                put("name", "search_web")
+                put("description", "Search the web for information")
+                put("parameters", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("query", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "What to search for")
+                        })
+                    })
+                    put("required", JSONArray().apply { put("query") })
+                })
+            })
         }
     }
     
