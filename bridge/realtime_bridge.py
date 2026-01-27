@@ -29,6 +29,7 @@ except ImportError:
 
 from config import BandophoneConfig, VOICES, DEFAULT_INSTRUCTIONS
 from audio_server import AudioServer
+from phone_audio_stream import PhoneAudioStream
 
 logging.basicConfig(
     level=logging.INFO,
@@ -220,7 +221,8 @@ class TranscriptLogger:
 class RealtimeBridge:
     """Main bridge between phone and OpenAI Realtime API with Clawdbot integration."""
     
-    def __init__(self, config: BandophoneConfig, audio_server: Optional[AudioServer] = None):
+    def __init__(self, config: BandophoneConfig, audio_server: Optional[AudioServer] = None,
+                 phone_stream: Optional[PhoneAudioStream] = None):
         self.config = config
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
@@ -230,6 +232,7 @@ class RealtimeBridge:
         self.transcript = TranscriptLogger(config.transcripts_dir)
         self.resampler = AudioResampler()
         self.audio_server = audio_server
+        self.phone_stream = phone_stream  # For TinyALSA injection
         
         # Playback callback
         self.on_audio_response: Optional[Callable[[bytes], None]] = None
@@ -285,7 +288,7 @@ class RealtimeBridge:
         log.info(f"Session configured: voice={self.config.voice}")
     
     async def send_audio(self, audio_data: bytes):
-        """Send captured audio to OpenAI."""
+        """Send captured audio to OpenAI (resamples from capture rate)."""
         if not self.is_connected:
             return
         
@@ -297,6 +300,17 @@ class RealtimeBridge:
         )
         
         audio_b64 = base64.b64encode(resampled).decode('utf-8')
+        await self.ws.send(json.dumps({
+            "type": "input_audio_buffer.append",
+            "audio": audio_b64
+        }))
+    
+    async def send_audio_raw(self, audio_data: bytes):
+        """Send pre-converted 24kHz mono audio to OpenAI (no resampling)."""
+        if not self.is_connected:
+            return
+        
+        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
         await self.ws.send(json.dumps({
             "type": "input_audio_buffer.append",
             "audio": audio_b64
@@ -343,23 +357,26 @@ class RealtimeBridge:
             log.debug("Session created")
         
         elif event_type == "response.audio.delta":
-            # AI audio chunk
+            # AI audio chunk — 24kHz mono PCM16 from OpenAI
             audio_b64 = data.get("delta", "")
             if audio_b64:
                 audio_data = base64.b64decode(audio_b64)
-                # Resample 24kHz → 48kHz for playback
-                resampled = self.resampler.upsample(
-                    audio_data,
-                    self.config.audio.openai_rate,
-                    self.config.audio.playback_rate
-                )
                 
-                # Send to Android app via WebSocket
+                # Inject into phone call via TinyALSA (24kHz mono → stereo → device 19)
+                if self.phone_stream:
+                    asyncio.create_task(self.phone_stream.inject_audio(audio_data))
+                
+                # Also send to Android app via WebSocket if connected
                 if self.audio_server and self.audio_server.has_clients:
+                    resampled = self.resampler.upsample(
+                        audio_data,
+                        self.config.audio.openai_rate,
+                        self.config.audio.playback_rate
+                    )
                     asyncio.create_task(self.audio_server.send_audio(resampled))
                 
                 if self.on_audio_response:
-                    self.on_audio_response(resampled)
+                    self.on_audio_response(audio_data)
         
         elif event_type == "response.audio_transcript.delta":
             text = data.get("delta", "")
@@ -645,24 +662,23 @@ async def main():
     if args.api_key:
         config.openai_api_key = args.api_key
     
-    if not config.openai_api_key:
-        config.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    # Config load now handles env var and Keychain automatically
     
     if not config.openai_api_key:
-        print("Set OPENAI_API_KEY or use --api-key", file=sys.stderr)
+        print("No OpenAI API key found. Set OPENAI_API_KEY, store in macOS Keychain, or use --api-key", file=sys.stderr)
         sys.exit(1)
     
     # Start audio server for Android app
     audio_server = AudioServer(port=args.server_port)
     await audio_server.start()
     
-    bridge = RealtimeBridge(config, audio_server=audio_server)
+    # Setup phone audio stream for TinyALSA injection/capture
+    phone_stream = None
+    if not args.test_file:
+        device_serial = config.adb_device
+        phone_stream = PhoneAudioStream(device_serial=device_serial)
     
-    # Use file capture for testing, or live capture from phone
-    if args.test_file:
-        capture = FileCapture(args.test_file, config)
-    else:
-        capture = PhoneCapture(config)
+    bridge = RealtimeBridge(config, audio_server=audio_server, phone_stream=phone_stream)
     
     try:
         # Connect to OpenAI first
@@ -673,15 +689,37 @@ async def main():
         log.info("Bridge ready. Listening...")
         log.info(f"Android app can connect to ws://YOUR_MAC_IP:{args.server_port}")
         
-        # Then run capture and response handling in parallel
-        await asyncio.gather(
-            bridge.handle_responses(),
-            capture.capture_loop(bridge)
-        )
+        if args.test_file:
+            # Test mode: use file capture
+            capture = FileCapture(args.test_file, config)
+            await asyncio.gather(
+                bridge.handle_responses(),
+                capture.capture_loop(bridge)
+            )
+        else:
+            # Live mode: use PhoneAudioStream for bidirectional audio
+            log.info("Waiting for active phone call...")
+            while not phone_stream.is_call_active():
+                await asyncio.sleep(0.5)
+            
+            log.info("📞 Call detected! Starting audio stream...")
+            await phone_stream.start()
+            
+            # Capture from phone → OpenAI
+            async def capture_task():
+                async for chunk in phone_stream.capture_stream():
+                    # chunk is already 24kHz mono — send directly to OpenAI
+                    await bridge.send_audio_raw(chunk)
+            
+            await asyncio.gather(
+                bridge.handle_responses(),
+                capture_task()
+            )
     except KeyboardInterrupt:
         log.info("Interrupted")
     finally:
-        capture.stop()
+        if phone_stream:
+            await phone_stream.stop()
         await bridge.stop()
         await audio_server.stop()
 

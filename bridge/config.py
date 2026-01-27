@@ -71,7 +71,7 @@ class BandophoneConfig:
     # Device
     adb_device: Optional[str] = None
     capture_device: int = 20
-    playback_device: int = 18
+    playback_device: int = 19
     
     # Features
     save_transcripts: bool = True
@@ -89,8 +89,26 @@ class BandophoneConfig:
                 data = json.load(f)
             if "audio" in data:
                 data["audio"] = AudioConfig(**data["audio"])
-            return cls(**data)
-        return cls()
+            config = cls(**data)
+        else:
+            config = cls()
+        
+        # Resolve API key: env var > keychain > config file
+        if not config.openai_api_key:
+            config.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not config.openai_api_key:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["security", "find-generic-password", "-a", "bando", "-s", "openai-api-key", "-w"],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    config.openai_api_key = result.stdout.strip()
+            except Exception:
+                pass
+        
+        return config
     
     def save(self, path: str = "bandophone.json"):
         """Save config to JSON file."""

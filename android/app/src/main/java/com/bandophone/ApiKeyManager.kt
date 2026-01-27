@@ -13,6 +13,9 @@ object ApiKeyManager {
     private const val KEY_OPENAI_API_KEY = "openai_api_key"
     private const val KEY_AI_INSTRUCTIONS = "ai_instructions"
     private const val KEY_AI_VOICE = "ai_voice"
+    private const val KEY_GATEWAY_URL = "gateway_url"
+    
+    private const val DEFAULT_GATEWAY_URL = "http://192.168.4.82:3000"  // Mac mini Tailscale
     
     private const val DEFAULT_INSTRUCTIONS = """
         You are a helpful AI assistant on a phone call.
@@ -74,5 +77,16 @@ object ApiKeyManager {
         getEncryptedPrefs(context).edit()
             .remove(KEY_OPENAI_API_KEY)
             .apply()
+    }
+    
+    fun saveGatewayUrl(context: Context, url: String) {
+        getEncryptedPrefs(context).edit()
+            .putString(KEY_GATEWAY_URL, url.trim())
+            .apply()
+    }
+    
+    fun getGatewayUrl(context: Context): String {
+        return getEncryptedPrefs(context).getString(KEY_GATEWAY_URL, DEFAULT_GATEWAY_URL)
+            ?: DEFAULT_GATEWAY_URL
     }
 }
