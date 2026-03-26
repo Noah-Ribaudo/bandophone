@@ -1,0 +1,2 @@
+[18:28:44] User: Hello, can you add a meeting to my calendar for tomorrow at 3pm?
+[18:28:46] AI: You've got one meeting scheduled for tomorrow, a Volleyball Party from 7 to 9 PM. The rest of the day is free.

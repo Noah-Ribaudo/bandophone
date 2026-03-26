@@ -42,7 +42,7 @@ OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
 OPENAI_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 
 
-# Function definition for ask_bando
+# Function definitions for OpenAI Realtime tools
 ASK_BANDO_FUNCTION = {
     "type": "function",
     "name": "ask_bando",
@@ -63,6 +63,22 @@ ASK_BANDO_FUNCTION = {
     }
 }
 
+HANGUP_FUNCTION = {
+    "type": "function",
+    "name": "hangup",
+    "description": "End the phone call. Use when the user says goodbye, is done, or asks to hang up. Say goodbye first, then call this.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for hanging up (e.g., 'user said goodbye', 'task complete')"
+            }
+        },
+        "required": ["reason"]
+    }
+}
+
 
 class ClawdbotBridge:
     """Bridge to Clawdbot for ask_bando function calls via CLI."""
@@ -71,29 +87,28 @@ class ClawdbotBridge:
         self.config = config
     
     async def ask_bando(self, request: str, context: str = "", urgent: bool = False) -> str:
-        """Send a request to Clawdbot and get response via CLI."""
+        """Send a request to Clawdbot and get response via CLI.
         
-        # Format the message
+        Uses a dedicated session ID to avoid TTS mode in the main session.
+        Response format: { result: { payloads: [{ text: "..." }] } }
+        """
+        
         message = f"[Voice call request] {request}"
         if context:
             message = f"[Voice call context: {context}]\n\n{request}"
         
-        log.info(f"Asking Bando: {request[:100]}...")
+        log.info(f"🔧 Asking Bando: {request[:100]}...")
         
         try:
-            # Use clawdbot agent CLI to send message and get response
             cmd = [
                 "clawdbot", "agent",
                 "--message", message,
                 "--json",
-                "--agent", "main"  # Use main agent
+                "--agent", "main",
+                # Use dedicated session to avoid TTS mode of main session
+                "--session-id", self.config.clawdbot_session or "bandophone-voice"
             ]
             
-            # Override with specific session if configured
-            if self.config.clawdbot_session:
-                cmd.extend(["--session-id", self.config.clawdbot_session])
-            
-            # Run async subprocess
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -102,27 +117,44 @@ class ClawdbotBridge:
             
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
-                timeout=30.0
+                timeout=60.0  # Tools can take time (calendar, web search, etc.)
             )
             
             if process.returncode == 0:
                 try:
                     result = json.loads(stdout.decode())
-                    reply = result.get("reply", result.get("response", ""))
-                    if reply:
-                        log.info(f"Bando replied: {reply[:100]}...")
-                        return reply
+                    
+                    # Parse the actual response format:
+                    # { result: { payloads: [{ text: "..." }] } }
+                    payloads = result.get("result", {}).get("payloads", [])
+                    if payloads:
+                        text = payloads[0].get("text", "")
+                        if text:
+                            log.info(f"🔧 Bando replied: {text[:100]}...")
+                            return text
+                    
+                    # Fallback: try other common fields
+                    for key in ["reply", "response", "text"]:
+                        val = result.get(key, "")
+                        if val:
+                            return val
+                    
+                    # Last resort: check if status is ok but no text
+                    if result.get("status") == "ok":
+                        log.warning(f"Bando returned OK but no text. Full response: {json.dumps(result)[:300]}")
+                        return "I completed the task, but didn't get a text response back."
+                    
                 except json.JSONDecodeError:
-                    # Maybe plain text response
                     reply = stdout.decode().strip()
                     if reply:
                         return reply
             
-            log.error(f"Clawdbot error: {stderr.decode()[:200]}")
+            err_text = stderr.decode()[:300] if stderr else "unknown error"
+            log.error(f"Clawdbot error (rc={process.returncode}): {err_text}")
             return "Sorry, I couldn't reach Bando right now."
                 
         except asyncio.TimeoutError:
-            log.warning("Clawdbot request timed out")
+            log.warning("Clawdbot request timed out (60s)")
             return "Bando is taking a while to respond. Try again?"
         except Exception as e:
             log.error(f"Clawdbot error: {e}")
@@ -240,6 +272,7 @@ class RealtimeBridge:
         # State
         self.current_response_text = ""
         self.pending_function_call = None
+        self._hangup_requested = False
         
     async def connect(self):
         """Connect to OpenAI Realtime API."""
@@ -266,7 +299,7 @@ class RealtimeBridge:
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": self.config.instructions,
+                "instructions": self.config.instructions + "\n\nYou have a hangup() function to end the call. When the user says goodbye, they're done, or the task is complete, say a brief farewell and then call hangup().",
                 "voice": self.config.voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
@@ -279,7 +312,7 @@ class RealtimeBridge:
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 700
                 },
-                "tools": [ASK_BANDO_FUNCTION],
+                "tools": [ASK_BANDO_FUNCTION, HANGUP_FUNCTION],
                 "tool_choice": "auto"
             }
         }
@@ -448,6 +481,22 @@ class RealtimeBridge:
             except Exception as e:
                 log.error(f"Function call error: {e}")
                 result = f"Error: {str(e)[:100]}"
+        elif name == "hangup":
+            try:
+                args = json.loads(args_str)
+                reason = args.get("reason", "call ended")
+                log.info(f"📞 Hanging up: {reason}")
+                
+                if self.phone_stream:
+                    await self.phone_stream.hangup()
+                
+                result = "Call ended successfully."
+                # Signal to stop the bridge loop
+                self._hangup_requested = True
+                
+            except Exception as e:
+                log.error(f"Hangup error: {e}")
+                result = f"Error hanging up: {str(e)[:50]}"
         else:
             result = f"Unknown function: {name}"
         
@@ -698,23 +747,102 @@ async def main():
             )
         else:
             # Live mode: use PhoneAudioStream for bidirectional audio
-            log.info("Waiting for active phone call...")
-            while not phone_stream.is_call_active():
-                await asyncio.sleep(0.5)
-            
-            log.info("📞 Call detected! Starting audio stream...")
-            await phone_stream.start()
-            
-            # Capture from phone → OpenAI
-            async def capture_task():
-                async for chunk in phone_stream.capture_stream():
-                    # chunk is already 24kHz mono — send directly to OpenAI
-                    await bridge.send_audio_raw(chunk)
-            
-            await asyncio.gather(
-                bridge.handle_responses(),
-                capture_task()
-            )
+            # Loop to handle multiple calls and survive ADB hiccups
+            while True:
+                try:
+                    log.info("Waiting for active phone call...")
+                    while not phone_stream.is_call_active():
+                        await asyncio.sleep(0.5)
+                    
+                    log.info("📞 Call detected! Starting audio stream...")
+                    await phone_stream.start()
+                    
+                    # Inject initial greeting — AI speaks first and asks a question
+                    log.info("Injecting greeting prompt...")
+                    await bridge.ws.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "The user just picked up the phone. Greet them warmly and ask what you can help with today. Keep it brief — one or two sentences max."}]
+                        }
+                    }))
+                    await bridge.ws.send(json.dumps({"type": "response.create"}))
+                    
+                    # Capture from phone → OpenAI
+                    async def capture_task():
+                        async for chunk in phone_stream.capture_stream():
+                            if bridge._hangup_requested:
+                                log.info("Hangup requested — stopping capture")
+                                break
+                            # chunk is already 24kHz mono — send directly to OpenAI
+                            await bridge.send_audio_raw(chunk)
+                    
+                    # Run both tasks, stop when either finishes
+                    done, pending = await asyncio.wait(
+                        [
+                            asyncio.create_task(bridge.handle_responses()),
+                            asyncio.create_task(capture_task())
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in pending:
+                        task.cancel()
+                    
+                    # Call ended — clean up
+                    log.info("Call ended. Cleaning up...")
+                    bridge._hangup_requested = False
+                    try:
+                        await phone_stream.stop()
+                    except:
+                        pass
+                    phone_stream._running = False
+                    
+                    # Sync transcript
+                    if bridge.transcript.entries:
+                        await bridge.clawdbot.sync_transcript(bridge.transcript.get_transcript())
+                    bridge.transcript.stop()
+                    
+                    # Reconnect to OpenAI for fresh session (old session has stale conversation)
+                    log.info("Reconnecting to OpenAI for fresh session...")
+                    try:
+                        if bridge.ws:
+                            await bridge.ws.close()
+                    except:
+                        pass
+                    bridge.is_connected = False
+                    
+                    await asyncio.sleep(1)
+                    await bridge.connect()
+                    bridge.is_running = True
+                    bridge.transcript.start()
+                    
+                except Exception as e:
+                    log.error(f"Call loop error: {e}")
+                    log.info("Recovering... will wait for next call")
+                    try:
+                        await phone_stream.stop()
+                    except:
+                        pass
+                    phone_stream._running = False
+                    await asyncio.sleep(2)
+                    
+                    # Reconnect to OpenAI
+                    log.info("Reconnecting to OpenAI...")
+                    try:
+                        if bridge.ws:
+                            await bridge.ws.close()
+                    except:
+                        pass
+                    bridge.is_connected = False
+                    
+                    try:
+                        await bridge.connect()
+                        bridge.is_running = True
+                        bridge.transcript.start()
+                    except Exception as e2:
+                        log.error(f"Reconnect failed: {e2}")
+                        break
     except KeyboardInterrupt:
         log.info("Interrupted")
     finally:
